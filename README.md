@@ -212,7 +212,7 @@
 dsh plugin --profile desktop add github:seeseeczl/dsh-sym
 
 # 从 Release 附件里的 tarball
-dsh plugin --profile desktop add /绝对路径/dsh-sym-1.3.1.tgz
+dsh plugin --profile desktop add /绝对路径/dsh-sym-1.4.0.tgz
 
 # 从本地目录
 dsh plugin --profile desktop add /绝对路径/dsh-sym

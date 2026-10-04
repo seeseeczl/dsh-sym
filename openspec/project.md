@@ -2,7 +2,7 @@
 id: OPENSPEC-CONTEXT-0001
 type: requirements-governance
 status: approved
-version: 1.3.1
+version: 1.4.0
 created_at: 2026-09-30T18:42:00+08:00
 owner: project-owner
 related: [ARCH-REQ-0001, PLAN-0001]

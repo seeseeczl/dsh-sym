@@ -1,6 +1,6 @@
 {
   "name": "dsh-sym",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "给 DeepSeek Harness 的界面读数层：输入框状态栏的实时会话花费（人民币、按实际厂商/模型与峰谷时段折算）、输入框工具行里模型选择器左侧的 DeepSeek 账户余额、品牌行的峰谷时段标记、把任意一条回复作为上下文引用的 @ 按钮，以及侧栏右缝里可自定义的快捷按钮条（含设置页）。",
   "license": "MIT",
   "type": "module",

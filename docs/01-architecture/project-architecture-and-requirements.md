@@ -12,7 +12,7 @@
 - Profile：`core` + `ui` + `service`
 - 项目根：`~/GitHub/DSH-Sym`（2026-09-30 从 profile 的 `plugins/` 目录搬出；插件仍由
   `~/.dsh/profiles/desktop/cordis.patch.yml` 里的 `file://` 条目挂载，换路径后需重启 App）
-- 当前版本：`1.3.1`（未发布 npm；经 GitHub Release 分发，变更记录见 `CHANGELOG.md`）
+- 当前版本：`1.4.0`（未发布 npm；经 GitHub Release 分发，变更记录见 `CHANGELOG.md`）
 
 ---
 
