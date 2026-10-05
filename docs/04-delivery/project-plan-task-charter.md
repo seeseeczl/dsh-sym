@@ -405,6 +405,7 @@
 | 2026-09-30 | T-13 | 🟡 部分完成 2/8：`kickoff-and-architecture.md`、`audit-workflow.md`；其余 6 处经用户确认超出本次范围 |
 | 2026-10-04 | —— | dsh-design 四角色设计审计产出（视觉／交互／动效／产品）：[审计报告](../05-audits/2026-10-04-222628-design-audit-report.md) + [优化计划书](../05-audits/2026-10-04-222628-design-optimization-tasks.md)；判为 **blocked**（14 结构性 / 18 打磨），证据目录 `docs/05-audits/evidence-2026-10-04/` |
 | 2026-10-04 | —— | 审计整改**第一批**落地并发布 **1.4.0**：S-1／S-11／S-12／S-13／S-14 + 「保存」按钮配色（改前 → 改后实测见 [CHANGELOG](../../CHANGELOG.md) 的 `[1.4.0]`）；其余待拍板项留在优化计划书 |
+| 2026-10-05 | —— | 快捷按钮**加回官方命令**并发布 **1.5.0**：官方菜单 pick 通道（`commandUi.dispatch` + `submit`/claim）、竖条与设置页三类分组、图标统一配色与放大、名称列压窄（改前 → 改后实测见 [CHANGELOG](../../CHANGELOG.md) 的 `[1.5.0]`） |
 |  |  |  |
 
 ---

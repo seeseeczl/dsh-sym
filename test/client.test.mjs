@@ -435,3 +435,93 @@ test('光标留在输入框：按下按钮时阻止默认行为，避免焦点�
   assert.doesNotThrow(() => keepComposerFocus(null), '事件缺失时不该抛错')
   assert.doesNotThrow(() => keepComposerFocus({}), '事件没有 preventDefault 时不该抛错')
 })
+
+test('快捷按钮分组：三组顺序固定，组内保持原顺序', () => {
+  const { groupQuickButtons } = loadClient()
+  const buttons = [
+    { id: 'a', kind: 'prompt', value: 'p1' },
+    { id: 'b', kind: 'command', value: '/compact' },
+    { id: 'c', kind: 'skill', value: 'code-review' },
+    { id: 'd', kind: 'prompt', value: 'p2' },
+    { id: 'e', kind: 'command', value: '/goal' },
+  ]
+  const groups = groupQuickButtons(buttons)
+  assert.deepEqual(groups.map((g) => g.kind), ['command', 'skill', 'prompt'])
+  assert.deepEqual(groups[0].buttons.map((b) => b.id), ['b', 'e'])
+  assert.deepEqual(groups[1].buttons.map((b) => b.id), ['c'])
+  assert.deepEqual(groups[2].buttons.map((b) => b.id), ['a', 'd'])
+})
+
+test('快捷按钮分组：认不出的类型归提示词，空组也返回（调用方据此跳过分割线）', () => {
+  const { groupQuickButtons, quickKindOf } = loadClient()
+  assert.equal(quickKindOf({ kind: 'command' }), 'command')
+  assert.equal(quickKindOf({ kind: 'skill' }), 'skill')
+  assert.equal(quickKindOf({ kind: 'prompt' }), 'prompt')
+  assert.equal(quickKindOf({ kind: 'nonsense' }), 'prompt', '未知类型不能凭空消失')
+  assert.equal(quickKindOf(null), 'prompt')
+  const groups = groupQuickButtons([{ id: 'x', kind: 'nonsense', value: 'v' }])
+  assert.deepEqual(groups.map((g) => g.buttons.length), [0, 0, 1])
+  assert.deepEqual(groupQuickButtons(null).map((g) => g.buttons.length), [0, 0, 0])
+})
+
+test('快捷按钮：内置清单自带三条官方命令，且排在提示词之前', () => {
+  const { DEFAULT_QUICK_ACTIONS, groupQuickButtons } = loadClient()
+  const commands = DEFAULT_QUICK_ACTIONS.filter((b) => b.kind === 'command')
+  assert.deepEqual(commands.map((b) => b.value), ['/goal', '/plan', '/compact'])
+  for (const button of commands) {
+    assert.equal(button.icon, button.id, '图标默认取条目 id，图标集里必须有同名的')
+    assert.ok(button.label.length > 0)
+  }
+  const groups = groupQuickButtons(DEFAULT_QUICK_ACTIONS)
+  assert.equal(groups[0].buttons.length, 3, '官方命令成组排在最前')
+  assert.equal(groups[1].buttons.length, 0)
+  assert.equal(groups[2].buttons.length, 4)
+})
+
+test('图标集：每条都是 [标签, 属性] 形状，且名字顺序与选择器一致', () => {
+  const client = loadClient()
+  const names = Object.keys(client.QUICK_ICONS)
+  assert.ok(names.length >= 100, '图标库不该缩水到 100 以下，实际 ' + names.length)
+  // 选择器把官方 `/` 菜单那 8 枚排在最前，其余沿用对象键序 —— 所以只比集合，不比顺序。
+  assert.deepEqual([...client.QUICK_ICON_NAMES].sort(), [...names].sort(), '选择器与图标集必须是同一套名字')
+  assert.deepEqual(client.QUICK_ICON_NAMES.slice(0, 8), ['file', 'goal', 'plan', 'feedback', 'ring', 'permission', 'model', 'download'], '官方那 8 枚排在最前')
+  for (const [name, parts] of Object.entries(client.QUICK_ICONS)) {
+    assert.ok(Array.isArray(parts) && parts.length > 0, name + ' 至少要有一个图元')
+    for (const part of parts) {
+      assert.ok(Array.isArray(part) && part.length === 2, name + ' 的图元是 [标签, 属性]')
+      assert.equal(typeof part[0], 'string', name + ' 的标签是字符串')
+      assert.ok(part[1] !== null && typeof part[1] === 'object', name + ' 的属性是对象')
+    }
+  }
+  for (const button of client.DEFAULT_QUICK_ACTIONS) {
+    assert.ok(Object.hasOwn(client.QUICK_ICONS, button.icon), '默认按钮的图标 "' + button.icon + '" 必须在图标集里')
+  }
+})
+
+test('迁移：已保存清单缺官方命令时补回三条，且只补一次', () => {
+  const store = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, value),
+    removeItem: (key) => store.delete(key),
+  }
+  try {
+    const client = loadClient()
+    const KEY = 'dsh-sym.quick-actions'
+    store.set(KEY, JSON.stringify({ enabled: true, buttons: [{ id: 'review', label: '审查改动', kind: 'prompt', value: 'x' }] }))
+    assert.equal(client.migrateStoredQuickActions(), true)
+    const after = JSON.parse(store.get(KEY))
+    assert.deepEqual(after.buttons.slice(0, 3).map((b) => b.value), ['/goal', '/plan', '/compact'])
+    assert.equal(after.buttons.length, 4, '补在前面，不动原有那一条')
+    assert.equal(after.commandsAdded, true, '补过就打标记，避免反复打扰')
+    assert.equal(client.migrateStoredQuickActions(), false, '第二次不再补')
+    store.set(KEY, JSON.stringify({ enabled: true, commandsAdded: true, buttons: [{ id: 'x', label: 'x', kind: 'prompt', value: 'y' }] }))
+    assert.equal(client.migrateStoredQuickActions(), false, '用户手动删掉后不再补回来')
+    store.set(KEY, JSON.stringify({ enabled: true, buttons: [{ id: 'g', label: '目标', kind: 'command', value: '/goal' }] }))
+    assert.equal(client.migrateStoredQuickActions(), false, '已经有官方命令就不动')
+    store.delete(KEY)
+    assert.equal(client.migrateStoredQuickActions(), false, '没配过的人走默认清单，不需要迁移')
+  } finally {
+    delete globalThis.localStorage
+  }
+})

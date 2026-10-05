@@ -92,5 +92,9 @@ test('跨端契约：会抢走输入框焦点的四个控件都必须按下去�
   const guarded = source.match(/onMouseDown: keepComposerFocus/g) ?? []
   assert.equal(guarded.length, 4, '竖条按钮、@ 引用按钮、成本药丸、余额药丸四处都要挂 keepComposerFocus')
   const focused = source.match(/if \(ok\) focusComposer\(/g) ?? []
-  assert.equal(focused.length, 2, '两处插入成功后都要把光标还回去（并带上触发元素用于收窄会话）')
+  assert.equal(focused.length, 3, '@ 引用、竖条提示词/技能、竖条官方命令降级：三处插入成功后都要把光标还回去（并带上触发元素用于收窄会话）')
+  // 官方命令的 claim 路径不写文本，而是派发 `slash/input-begin-command` 让会话 shell
+  // 去替换草稿；落成之后同样要把光标还给输入框（否则接着打字打不进去）。
+  const claimed = source.match(/if \(applied === true\) focusComposer\(/g) ?? []
+  assert.equal(claimed.length, 1, '官方命令 claim 落进草稿后也要把光标还回去')
 })

@@ -334,6 +334,15 @@ namespaces: [...] } }`，且 descriptor 里的 `schema` 是 schemastery 内部�
 （"让余额和设置并排"）根本不成立 —— 余额是 `position: fixed`，脱流的元素不需要任何规则帮忙。
 **只有当真要替换官方排版时才动官方 CSS；自己的浮层一律自己定位。**
 
+**客户端半边不能拆文件（2026-10-05 查 `dsh-client-modules` 证实）**：加载器确实支持
+包内动态 chunk —— `require.async("./client.xxx.js")` 走 `importChunk`，但 chunk 的 URL 由
+`chunkUrl(row, …)` 从 **owner 的 bundle URL** 推导，而它要求那个 URL 里带 `/??<id>/client.js`
+与 `&rev=` 这一段（原文：`cannot resolve chunk … from bundle URL`）。
+**`file://` 挂载的插件没有这种 URL**，所以拆不出 chunk；`require("./x.js")` 同样不行
+（只解析平台 seed、已物化模块与 boot graph 行）。
+→ 因此 `lib/client.js` 的体积只能靠**就地压缩**来控制；要真正拆文件，前提是改成走
+HTTP bundle 服务的包安装形态。相关阈值见 `.project-architect.json` 的 `loc.hardCeiling`。
+
 **往输入框里"放一条指令"要带尾随空格**：客户端把**"命令 + 空格"**认作"指令行、开始收参数"，
 这与从官方 `/` 菜单选中一条指令后的状态一致（如 `/goal` 会提示"输入目标，…"）；只填命令名
 （`/goal` 不带空格）则只会弹出 `/` 菜单，还要用户再选一次。
@@ -341,14 +350,18 @@ namespaces: [...] } }`，且 descriptor 里的 `schema` 是 schemastery 内部�
 另外：**菜单选中后的结构化命令 chip 是客户端 slash 流水线的内部结构，插件构造不出来** ——
 插件能做的只有"填入文本 + 空格"这个等效形态。
 
+> **⚠ 上面这条已被 2026-10-05 的发现取代，读下面「官方命令可以直接走菜单 pick 通道」一节。**
+> 结论没错（chip 节点确实构造不出来），但它**不再是限制**：插件不必自己造 chip，
+> 把 pick 交回官方、由官方去造即可。
+
 **更正（2026-09-30 查线上 bundle 得到）**：此前这里写着"`inputActions` 只有 `insertText` /
 `captureInsertion`，没有提交能力"，**是错的**。slot props 里的 `inputActions` 就是
 `SessionInputShell.actions`（`@deepseek-ai/dsh-client-ui-conversation/lib/client.js` 里
 `props: { inputActions: shell.actions }` 那一行），它一共给了七个方法：
 `captureInsertion` / `insertText` / `setDraft` / `addAttachments` / `removeAttachment` /
 `pruneAttachments` / **`submit`**（`submit: () => this.submit("queue")`，等同按回车）。
-所以"填进去并自动执行"在通道层面是**够得着**的。仍然做不到的是"以编程方式完成一次
-菜单 pick"：那个蓝色 token 与客户端自有命令的回调只由输入框的 `/` 菜单触发。
+所以"填进去并自动执行"在通道层面是**够得着**的。仍然做不到的是"靠自己拼出一次
+菜单 pick 的**结果**"：那个蓝色 token 与客户端自有命令的回调只由输入框的 `/` 菜单触发。
 （`submit()` 提交一段 `/命令 ` 文本会不会被 slash 流水线解释成命令，**没有验证过**。）
 
 **往输入框写完之后要把光标还回去**：输入框是官方的 Lexical `contenteditable`，
@@ -398,7 +411,9 @@ Lexical 又可能把 DOM 选区回收成模型选区，结果是"文字插到草
 点它们都会把输入框的焦点弄丢（非聚焦元素被点时焦点掉到 body）。它们只挂
 `keepComposerFocus`（不抢），**不要**调 `focusComposer`（看花费不是要写字，不该把光标抓过来）。
 
-**官方 `/` 菜单里的命令分两类，插件能做的完全不同**：
+**官方 `/` 菜单里的命令分两类，插件能做的完全不同**（⚠ 下半段关于"客户端自有命令"的
+结论已被 2026-10-05 取代，见紧随其后的新节；这里保留原文是因为"命令确实分两类、`execute`
+对第二类返回 `undefined`"仍然成立）：
 
 - **宿主命令**（压缩 compact / 权限 permission / 模型 model / 下载日志 export）：可以走
   `remote.commands.execute(sessionId, line, [])` 直接执行，点一下即生效。
@@ -414,3 +429,56 @@ Lexical 又可能把 DOM 选区回收成模型选区，结果是"文字插到草
   视觉上永远比不上菜单 pick 的蓝色 token。
 
 判断办法：填了命令 + 回车看结果，或直接看 `execute` 的返回值是不是 `undefined`。
+
+## 官方命令可以直接走菜单 pick 通道（2026-10-05 实测，取代上面两条否定结论）
+
+**结论**：插件**能**做出与"从输入框左下角 `+` 菜单里选中一条命令"完全一致的效果 ——
+包括蓝色命令 chip、参数提示（claimed 状态），以及无参数命令的直接执行。
+办法不是自己造 chip（那确实造不出来），而是**把那次 pick 交回官方**。
+
+三步，全部是官方 `dsh-client-ui-commands` 包里 `CommandUiRuntime` 的既有路径：
+
+```js
+// ① 目录就绪（descriptor 只在 ready 时能 resolve）
+await ctx.get("commandUi").directory.ensureReady(sessionId, signal)   // signal 必须是真的！
+const span = inputActions.captureInsertion();                          // { start, end, draftRev }
+// ② 官方菜单 pick 的决策表：contribution/decoration → popup 或 action；
+//    有 input 的宿主命令 → 返回 { claim }；无 input 的 → 自己 consume + 执行，返回 "handled"
+const outcome = commandUi.dispatch({ candidate: { name }, session, span });
+// ③ 拿到 claim 就交回会话 shell（与菜单点击后 execute(outcome, span) 做的事一模一样）
+binding.ctx.bail(binding.ctx, "slash/input-begin-command", { claim: outcome.claim, span });
+```
+
+- `session` 与 `binding.ctx` 来自 `sessions.binding(sessionId)`（`sessions` 在公开服务目录里）。
+- 落点是 `lib/client.js` 的 `commandBridge` / `runOfficialCommand` / `runCommandButton`；
+  `commandUi`、`sessions` 都是**官方内部服务**（不在公开服务目录），所以整条路径写成
+  "任一步拿不到就返回 `null`、由调用方降级"，而不是让竖条不渲染。
+
+**两个实测踩到的坑（都会静默退化成"点了没反应"）**：
+
+1. **`ensureReady(sessionId, signal)` 的 `signal` 不能省。** 它内部第一件事是读
+   `signal.aborted`，传 `undefined` 当场抛 TypeError；被 catch 吞掉后目录永远不 ready，
+   `dispatch` 拿不到 descriptor → 静默降级。用一个永不中止的 `AbortController().signal`。
+2. **`ctx.get("remote")` 会抛。** 未声明注入时是
+   `cannot get property "remote" without inject`；这个调用点在**点击时**，抛错会把整次点击
+   吞成"失败"。要用 `ctx.inject(["remote", "remote.commands"], (scope) => ...)` 条件注入、
+   点击时现取。
+
+**降级顺序（通道不可用时）**：按 descriptor 有没有 `input` 分流 ——
+有 input（目标 / 计划）→ 填 `命令 + 空格` 进草稿（回车时客户端自己会进 claim，功能一致）；
+没有 input（压缩 / 权限）→ 走 `remote.commands.execute`。
+**不能对无参数命令填草稿**：`/compact ` 带空格回车会被当成普通消息发出去。
+
+**真机证据（2026-10-05，DSH 桌面应用）**：点竖条上的官方命令按钮后 ——
+`/目标` → 草稿出现蓝色 chip `/目标` + 提示「输入目标，智能体将持续执行」；
+`/计划` → 蓝色 chip `/计划` + 「描述你的任务以生成计划」；
+`/权限` → 弹出官方权限选择器（仅可查看 / 工作区内修改 / 完全权限 / Auto review）。
+三者都与从菜单选中同一条命令的表现一致。`/compact` 未做端到端点击（会真的压缩会话，
+属破坏性操作），但它与 `/权限` 同属"无 input → runDetached"分支，该分支已由 `/权限` 证通。
+
+**顺带更正**：官方 `BUILTINS`（`dsh-client-ui-commands/lib/client.js`）把 goal / plan / feedback /
+compact / permission / export 都定义成**宿主命令**（`definitionId` 指向 `dsh-command-goal`、
+`dsh-plan-mode`、`dsh-command-compact` …），"客户端自有命令"那半段描述的是更早的 README。
+菜单的「添加」段 = `file / goal / plan / feedback`，「指令」段 = `compact / permission / model / export`；
+中文界面下 pick 写进草稿的是**本地化拼写**（`claimToken` → `token.goal` = `目标`），
+不是 `/goal`。
