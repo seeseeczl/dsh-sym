@@ -150,7 +150,7 @@
 
 - **输入**：FR-04、NFR-04；上游 §6.3（`holidays` 为公开契约）
 - **依赖**：无
-- **主要模块**：`lib/host-v12.js`（**高代价模块**）、`lib/prices.json`
+- **主要模块**：`lib/host-v13.js`（**高代价模块**）、`lib/prices.json`
 - **现状问题**：节假日同时存在于宿主常量 `DEFAULT_HOLIDAYS` 与 `prices.json`，**两处需同步**
 - **产物**：二者以 `prices.json` 为唯一事实源；宿主常量仅作兜底
 - **验收**：改 `prices.json` 后峰谷判定随之变化（用伪造时钟验证 2027 年某日）

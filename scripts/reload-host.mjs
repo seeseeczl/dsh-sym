@@ -13,7 +13,7 @@
  * 用法：
  *   node scripts/reload-host.mjs --dry-run              # 只打印将要改动的文件与行
  *   node scripts/reload-host.mjs --apply                # 真改：v6 → v7，并同步引用
- *   node scripts/reload-host.mjs --to host-v12.js --apply
+ *   node scripts/reload-host.mjs --to host-v13.js --apply
  *   node scripts/reload-host.mjs --profile ~/.dsh/profiles/other
  *
  * 退出码：0 正常（含 dry-run）；1 参数或环境有问题。

@@ -8,7 +8,7 @@
   "modules": [
     {
       "id": "M-HOST",
-      "path": "lib/host-v12.js",
+      "path": "lib/host-v13.js",
       "kind": "host",
       "role": "投影折叠、三级价目来源、引用展开、进程内存读数",
       "publicContract": ["sessionCost projection (stateVersion 3)", "readProcessMemory()"],

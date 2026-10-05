@@ -46,7 +46,7 @@
 对下面这些接口**连续误判 6 次**——因为契约此前只存在于实现里。**签名与返回契约以实现为准，
 本节是它的可读副本；发现不一致时先改本节。**
 
-### `lib/host-v12.js`
+### `lib/host-v13.js`
 
 ```js
 isPeakTime(ms, holidays = new Set(DEFAULT_HOLIDAYS)) -> boolean
@@ -140,7 +140,7 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 
 | 常量 | 宿主 | 客户端 |
 |---|---|---|
-| `PROJECTION_KEY` | `lib/host-v12.js` 顶部 | `lib/client.js` 的 contract 区 |
+| `PROJECTION_KEY` | `lib/host-v13.js` 顶部 | `lib/client.js` 的 contract 区 |
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
 
 **守卫在 `test/contracts.test.mjs`**：它断言两边相等，并用"客户端生成标记 → 宿主展开"
@@ -186,7 +186,7 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
   **换路径后必须重启 App**，宿主手里的还是旧绝对路径
 - **`file://` 挂载 ≠ 不是插件**（2026-10-01 查 asar 证实）：loader 里有 `nearestPackage()`
   （asar 偏移 18777873），拿到 `file://` 入口后会**向上找最近的 `package.json`** 当包根。
-  所以 `file:///…/lib/host-v12.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
+  所以 `file:///…/lib/host-v13.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
   `exports["./client"]` + `dsh.client` 解析 —— 与包安装的**唯一**差别是入口由绝对路径给出，
   而不是由 profile 的 `node_modules` 解析。
   选它是为了开发期的迭代速度：改 `lib/client.js` 刷新即生效、改 `prices.json` 即时生效、

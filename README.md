@@ -237,7 +237,7 @@ dsh plugin --profile desktop add /绝对路径/dsh-sym
 
 ```yaml
 - id: sym-cost
-  name: 'file:///绝对路径/dsh-sym/lib/host-v12.js'
+  name: 'file:///绝对路径/dsh-sym/lib/host-v13.js'
 ```
 
 再在同一个文件末尾确保它是启用的：
@@ -318,7 +318,7 @@ DSH 内置了一份 **pi-ai 价目目录**（42 家厂商、1046 个模型，美
 
 ```
 ┌─ 宿主（Electron 主进程，Cordis 插件树） ─────────────────────┐
-│  lib/host-v12.js                                              │
+│  lib/host-v13.js                                              │
 │   • sessionProjections 注册 sessionCost —— 会话事件的纯折叠   │
 │   • 折叠 request/header、assistant/message、llm/retry-started │
 │   • 只存 token 数（按峰/谷、按轮次、按模型分桶），不存金额     │
@@ -356,7 +356,7 @@ DSH 内置了一份 **pi-ai 价目目录**（42 家厂商、1046 个模型，美
 
 仓库里唯一的配置文件是 `lib/prices.json`（见上）。
 
-宿主半边改动（`lib/host-v12.js`）需要**重启 App**；客户端半边（`lib/client.js`）和
+宿主半边改动（`lib/host-v13.js`）需要**重启 App**；客户端半边（`lib/client.js`）和
 `lib/prices.json` 都是**热生效**的。
 
 ---
@@ -366,7 +366,7 @@ DSH 内置了一份 **pi-ai 价目目录**（42 家厂商、1046 个模型，美
 ### 目录
 
 ```
-lib/host-v12.js     宿主半边：投影折叠 + 价目来源 + 引用展开
+lib/host-v13.js     宿主半边：投影折叠 + 价目来源 + 引用展开
 lib/client.js      客户端半边：各处读数 + 快捷按钮条 + 设置页 + 峰谷标记
 lib/prices.json    价目覆盖 / 汇率 / 节假日
 cordis.patch.yml   组合包补丁（让 profile 一次性装好）
@@ -382,10 +382,10 @@ scripts/           开发脚本（宿主换名助手 reload-host.mjs）
 |---|---|
 | `lib/client.js` | 客户端插件热更新，页面自动重载该模块 |
 | `lib/prices.json` | 立即生效（宿主按 mtime 检测） |
-| `lib/host-v12.js` | **需要重启 App**，或用「停用 → 换文件名 → 启用」绕开模块缓存 |
+| `lib/host-v13.js` | **需要重启 App**，或用「停用 → 换文件名 → 启用」绕开模块缓存 |
 
 宿主半边改动之所以麻烦，是因为 DSH 的宿主热重载只监听配置与补丁文件，不监听插件代码。
-换一个新的文件名（`host-v12.js` → `host-v12.js`）能拿到一个全新的模块实例，但**必须等旧实例
+换一个新的文件名（`host-v12.js` → `host-v13.js`）能拿到一个全新的模块实例，但**必须等旧实例
 完成 dispose**，否则新旧注册会撞在一起。换名与同步引用已脚本化：
 
 ```bash

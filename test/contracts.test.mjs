@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import {
   PROJECTION_KEY, QUOTE_MARK_PREFIX, QUOTE_MARK_ID_LENGTH, QUICK_ACTIONS_KEY,
   DEFAULT_QUICK_ACTIONS, sessionCostProjection, rememberProse, expandQuoteMarks,
-} from '../lib/host-v12.js'
+} from '../lib/host-v13.js'
 import { loadClient } from './helpers/load-client.mjs'
 
 /**
