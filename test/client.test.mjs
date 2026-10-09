@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { loadClient } from './helpers/load-client.mjs'
 
 /**
@@ -523,5 +524,68 @@ test('迁移：已保存清单缺官方命令时补回三条，且只补一次',
     assert.equal(client.migrateStoredQuickActions(), false, '没配过的人走默认清单，不需要迁移')
   } finally {
     delete globalThis.localStorage
+  }
+})
+
+/**
+ * 会话头部 Git 胶囊的载荷整理（FR-11 / CR-0001）。纯函数：不渲染、不联网，
+ * 覆盖分支/detached 回退、千位分隔、未跟踪计数与「哪来的建 PR 链接」。
+ */
+test('git 胶囊：普通分支的读数与 tooltip', () => {
+  const client = loadClient()
+  const model = client.describeGitStatus({
+    root: '/Users/me/GitHub/DSH-Sym',
+    branch: 'main',
+    detached: false,
+    head: '8f2a1b0',
+    upstream: 'origin/main',
+    ahead: 2,
+    behind: 1,
+    files: 3,
+    added: 4784,
+    deleted: 116,
+    untracked: 2,
+  })
+  assert.equal(model.branch, 'main')
+  assert.equal(model.hasTotals, true)
+  assert.equal(model.added, 4784)
+  assert.equal(model.deleted, 116)
+  assert.equal(model.untracked, 2)
+  assert.match(model.title, /\/Users\/me\/GitHub\/DSH-Sym/, 'tooltip 给出仓库路径')
+  assert.match(model.title, /改动文件 3 个/, 'tooltip 给出改动文件数')
+})
+
+test('git 胶囊：detached 用短 sha，上游缺失不显示 0/0', () => {
+  const client = loadClient()
+  const model = client.describeGitStatus({ branch: null, detached: true, head: 'abc1234', ahead: null, behind: null, files: 0, added: null, deleted: null, untracked: 0 })
+  assert.equal(model.branch, 'abc1234')
+  assert.equal(model.hasTotals, false, 'diff 超时时不给 0')
+  assert.doesNotMatch(model.title, /领先/)
+  assert.equal(model.untracked, 0)
+})
+
+test('git 胶囊：本地分支清单的过滤与 current 标记（C3）', () => {
+  const client = loadClient()
+  const model = client.describeGitStatus({
+    branch: 'main', detached: false, files: 0, untracked: 0, added: null, deleted: null,
+    branches: [{ name: 'main', current: true }, { name: 'feat/x', current: false }, null, { name: '' }, { current: true }],
+  })
+  assert.deepEqual(model.branches, [{ name: 'main', current: true }, { name: 'feat/x', current: false }])
+  assert.equal(model.files, 0)
+  assert.equal(model.hasTotals, false)
+  assert.deepEqual(client.describeGitStatus({ branch: 'main', detached: false }).branches, [], '没有 branches 字段时是空数组，不是 undefined')
+})
+
+test('词典：zh / en 键集齐平，且代码里用到的键两边都有（C2）', () => {
+  const client = loadClient()
+  const zh = Object.keys(client.zh).sort()
+  const en = Object.keys(client.en).sort()
+  assert.deepEqual(zh, en, '两份词典的键集必须完全一致')
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const used = new Set([...source.matchAll(/tr\(t,\s*"([^"]+)"/g)].map((match) => match[1]))
+  assert.ok(used.size >= 20, '至少抓到一批真实用到的键：' + used.size)
+  for (const key of used) {
+    assert.ok(Object.hasOwn(client.zh, key), 'zh 词典缺 ' + key)
+    assert.ok(Object.hasOwn(client.en, key), 'en 词典缺 ' + key)
   }
 })

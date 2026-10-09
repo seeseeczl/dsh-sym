@@ -45,7 +45,7 @@ Git        干净（0 未提交）· main · git@github.com:seeseeczl/dsh-sym.gi
 缺失规范   AGENTS.md · CONTRIBUTING.md · .project-architect.json · docs/
 测试入口   无（package.json 无 scripts 字段）
 依赖       零（dependencies 与 devDependencies 均空）
-代码规模   2268 行：client.js 1349 + host-v13.js 833 + move-session.js 86
+代码规模   2268 行：client.js 1349 + host-v18.js 833 + move-session.js 86
 ```
 
 ---
@@ -85,6 +85,8 @@ Git        干净（0 未提交）· main · git@github.com:seeseeczl/dsh-sym.gi
 | FR-08 | 状态栏显示 DSH 进程常驻内存（rss） | 已实现 | 宿主 `readProcessMemory` + `client.js` `formatBytes` |
 | FR-09 | 回复中的文件链接支持右键：复制路径、在访达中显示 | 已实现 | `client.js` `LinkContextMenu` |
 | FR-10 | （搁置）会话跨工作区移动 | **未接通（代码已移出生产模块）** | 设计记录 `docs/01-architecture/adr-003-session-move-not-wired.md`，缺客户端→宿主通道 |
+| FR-11 | 会话头部常驻显示当前分支 + 工作区改动规模（**不含建 PR 入口**：用户一个人在主干预直接推，2026-10-09 撤回） | 已实现（CR-0001） | 宿主 `lib/host-v18.js` 的 `GIT_STATUS_ROUTE` 路由（只读 git）+ 客户端 `lib/client.js` 的 `GitStatusCell`（挂 `conversation.session.header.utilities`, order -20） |
+| FR-12 | 本地分支数 > 1 时，点胶囊上的分支名可切换本地分支（`git switch`，不 `-f`/不 stash） | 已实现（CR-0002） | 宿主 `lib/host-v18.js` 的 `switchBranch` + 路由 POST；客户端 `GitStatusCell` 的分支菜单 |
 
 ### 3.1 每条 FR 的验收方式
 
@@ -99,6 +101,8 @@ Git        干净（0 未提交）· main · git@github.com:seeseeczl/dsh-sym.gi
 | FR-08 | 状态栏出现内存读数；无 `process` 时该格**不渲染** |
 | FR-09 | 文件链接上右键弹出菜单；非链接位置**放行**官方菜单 |
 | FR-10 | 不适用（未接通） |
+| FR-11 | 头部出现分支名与 `+N −M`，数值与 `git status` / `git diff --numstat HEAD` 一致；非 git 仓库的会话里整块不渲染；**不出现任何建 PR 入口** |
+| FR-12 | 两个分支的仓库里点分支名能列出两个并切过去（`git branch --show-current` 跟着变）；工作区冲突时 git 拒绝并原样回显；只有一个分支时分支名不可点 |
 
 ---
 
@@ -125,7 +129,7 @@ Git        干净（0 未提交）· main · git@github.com:seeseeczl/dsh-sym.gi
 
 ```
 宿主（Electron 主进程，Cordis 插件树）
-  lib/host-v13.js
+  lib/host-v18.js
     ├─ sessionProjections 注册 sessionCost（key=sessionCost, stateVersion=3）
     │   纯折叠 session/event：request/header、assistant/message、llm/retry-started
     │   只存 token 数（按峰谷 / 按轮次 / 按模型分桶），不存金额
@@ -156,7 +160,7 @@ Git        干净（0 未提交）· main · git@github.com:seeseeczl/dsh-sym.gi
 
 | 文件 | 职责 | 变更代价 |
 |---|---|---|
-| `lib/host-v13.js` | 投影折叠、价目来源、引用展开、内存读数 | **高**：需"停用 → 换文件名 → 启用"或重启；换名与同步引用用 `scripts/reload-host.mjs` |
+| `lib/host-v18.js` | 投影折叠、价目来源、引用展开、内存读数 | **高**：需"停用 → 换文件名 → 启用"或重启；换名与同步引用用 `scripts/reload-host.mjs` |
 | `lib/client.js` | 四处显示、峰谷标记、花费面板、链接右键菜单 | 低：热更新即生效 |
 | `lib/prices.json` | 价目覆盖 / 汇率 / 节假日 | 低：按 mtime 即时生效 |
 | `cordis.patch.yml` | 组合包补丁，使 profile 一次性装好 | 中：改动触发宿主重载 |

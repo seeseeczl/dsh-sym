@@ -100,7 +100,7 @@ peer 版本必须与目标 DSH 完全一致（例如运行时是 `0.2.0-rc.2`，
 ```yaml
 - insert:
     - id: session-cost
-      name: '/绝对路径/dsh-sym/lib/host-v13.js'
+      name: '/绝对路径/dsh-sym/lib/host-v18.js'
 ```
 
 这正是本机当前使用的形态（见 `~/.dsh/profiles/desktop/cordis.patch.yml`）。

@@ -84,10 +84,10 @@ openspec/
 ```bash
 rg -n "sessionCost" lib/ cordis.patch.yml
 #   lib/client.js:963, 1214   useProjection("sessionCost")
-#   lib/host-v13.js:4, 746    定义处
+#   lib/host-v18.js:4, 746    定义处
 rg -n "引用#|expandQuoteMarks" lib/
-#   lib/host-v13.js:443  QUOTE_MARK 正则
-#   lib/host-v13.js:519  展开函数
+#   lib/host-v18.js:443  QUOTE_MARK 正则
+#   lib/host-v18.js:519  展开函数
 ```
 
 ⚠️ **不得声称跑过 `openspec` 或 `codegraph` 的校验命令**——两者在本机都不可用。

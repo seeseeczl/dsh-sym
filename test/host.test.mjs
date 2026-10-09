@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   isPeakTime, expandQuoteMarks, rememberProse, proseOfMessage, readProcessMemory,
   DEEPSEEK_CNY, DEFAULT_USD_TO_CNY,
   QUICK_ACTIONS_KEY, DEFAULT_QUICK_ACTIONS, normalizeQuickActions,
   createQuickActionsProjection, buttonsFromConfig, Config,
-} from '../lib/host-v13.js'
+  GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute,
+} from '../lib/host-v18.js'
 
 /** Beijing wall-clock on 2026-09-30 (a Wednesday) as epoch ms. */
 const bj = (y, m, d, hh, mm = 0) => Date.UTC(y, m - 1, d, hh - 8, mm)
@@ -262,3 +264,327 @@ test('快捷按钮：Config schema 可用于设置页（平台 schema 库可用�
   assert.equal(filled.buttons[0].kind, 'prompt', 'kind 缺省补成 prompt')
   assert.equal(filled.buttons[0].icon, 'dot')
 })
+
+//#region git status
+
+/** 一段真实的 `git status --porcelain=v2 --branch` 输出（含四种条目与忽略项）。 */
+const PORCELAIN = [
+  '# branch.oid 8f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a',
+  '# branch.head main',
+  '# branch.upstream origin/main',
+  '# branch.ab +2 -3',
+  '1 .M N... 100644 100644 100644 3b2c1d 3b2c1d lib/client.js',
+  '1 M. N... 100644 100644 100644 aa bb lib/host-v18.js',
+  '2 R. N... 100644 100644 100644 aa bb R100 new.js\told.js',
+  'u UU N... 100644 100644 100644 100644 aa bb cc conflicted.js',
+  '? scratch.txt',
+  '? notes/待办.md',
+  '! dist/bundle.js',
+].join('\n')
+
+test('git 状态：porcelain v2 解析出分支、上游、领先落后与文件计数', () => {
+  const status = parseGitStatus(PORCELAIN)
+  assert.equal(status.branch, 'main')
+  assert.equal(status.detached, false)
+  assert.equal(status.head, '8f2a1b0', '短 sha 取 7 位')
+  assert.equal(status.upstream, 'origin/main')
+  assert.equal(status.ahead, 2)
+  assert.equal(status.behind, 3)
+  assert.equal(status.files, 4, '1/2/u 三类条目都算已跟踪改动')
+  assert.equal(status.untracked, 2, '忽略项 ! 不计入未跟踪')
+})
+
+test('git 状态：detached 与 initial 不伪造分支或上游', () => {
+  const detached = parseGitStatus('# branch.oid 1234567890abcdef\n# branch.head (detached)\n')
+  assert.equal(detached.branch, null)
+  assert.equal(detached.detached, true)
+  assert.equal(detached.head, '1234567')
+  assert.equal(detached.ahead, null, '没有 upstream 就是 null，不是 0')
+  assert.equal(detached.behind, null)
+
+  const initial = parseGitStatus('# branch.oid (initial)\n# branch.head main\n')
+  assert.equal(initial.branch, 'main')
+  assert.equal(initial.head, null, '还没有提交时不编造 sha')
+})
+
+test('git 状态：空输入按没有仓库处理', () => {
+  assert.deepEqual(parseGitStatus('').files, 0)
+  assert.equal(parseGitStatus('').branch, null)
+  assert.equal(parseGitStatus(undefined).untracked, 0)
+})
+
+test('git 状态：numstat 汇总跳过二进制的一侧', () => {
+  const totals = parseNumstatTotals('12\t3\tlib/client.js\n-\t-\timage.png\n7\t0\tREADME.md\n')
+  assert.equal(totals.files, 3)
+  assert.equal(totals.added, 19)
+  assert.equal(totals.deleted, 3)
+  assert.deepEqual(parseNumstatTotals(''), { files: 0, added: 0, deleted: 0 })
+})
+
+test('git 状态：宿主不再产出 remote / compare（用户不做 PR 流程）', async () => {
+  // 读取器只放行 status/numstat/rev-parse 三类命令；remote 那一步连同它的建 PR 链接
+  // 一起被删除，所以这里断言「没有 compare 这个字段」在源码层面也成立。
+  const source = readFileSync(new URL('../lib/host-v18.js', import.meta.url), 'utf8')
+  assert.ok(!source.includes('compareUrlFor'), '建 PR 链接的拼接函数应已删除')
+  assert.ok(!source.includes("'remote', 'get-url'"), '不应再跑 git remote get-url')
+  assert.ok(!source.includes('compare:'), '载荷里不应再有 compare 字段')
+})
+
+test('git 状态：路由常量是 /api 下的固定 GET 路径', () => {
+  assert.equal(GIT_STATUS_ROUTE, '/api/sym.git')
+})
+
+//#endregion
+
+//#region git branch picker
+
+/** 一个记录 argv、按命令回放固定输出的 subprocess 替身。 */
+function stubSubprocess(reply, onSpawn) {
+  const calls = []
+  const spawns = []
+  const subprocess = {
+    async resolveExecutable() { return '/usr/local/bin/git' },
+    spawn(spec) {
+      calls.push(spec.argv)
+      spawns.push({ argv: spec.argv, signal: spec.signal })
+      if (typeof onSpawn === 'function') onSpawn(spec)
+      const canned = reply(spec.argv) ?? { exitCode: 0, stdout: '', stderr: '' }
+      return {
+        done: Promise.resolve({ exitCode: canned.exitCode }),
+        collected: {
+          stdout: { readFrom: () => ({ text: canned.stdout ?? '', lossy: false }) },
+          stderr: { readFrom: () => ({ text: canned.stderr ?? '' }) },
+        },
+      }
+    },
+  }
+  return { subprocess, calls, spawns, ranSwitch: () => calls.some((argv) => argv.includes('switch') || argv.includes('checkout')) }
+}
+
+const REFS_PICKER = 'main\t*\nfeat/x\t\n'
+const REFS_NAMES = 'main\nfeat/x\n'
+const STATUS_MAIN = '# branch.oid abc1234\n# branch.head main\n'
+
+/** 读取器回放：分支清单 / status / diff / toplevel 都是固定输出，switch 由调用方给。 */
+function readerReplies(switchOutcome, statusText = STATUS_MAIN) {
+  return (argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('switch')) return switchOutcome
+    if (line.startsWith('for-each-ref') && line.includes('%(HEAD)')) return { exitCode: 0, stdout: REFS_PICKER }
+    if (line.startsWith('for-each-ref')) return { exitCode: 0, stdout: REFS_NAMES }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: statusText }
+    if (line.startsWith('diff')) return { exitCode: 0, stdout: '3\t1\tlib/client.js\n' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    return { exitCode: 0, stdout: '' }
+  }
+}
+
+test('git 状态：分支清单解析，当前分支排最前', () => {
+  const list = parseBranches(REFS_PICKER)
+  assert.deepEqual(list, [{ name: 'main', current: true }, { name: 'feat/x', current: false }])
+  assert.deepEqual(parseBranches(''), [])
+  assert.deepEqual(parseBranches(undefined), [])
+  // 当前分支在 git 的"近因序"里排最后时，也要被提到最前。
+  const later = parseBranches('feat/x\t\nmain\t*\n')
+  assert.deepEqual(later.map((b) => b.name), ['main', 'feat/x'])
+})
+
+test('git 状态：非法分支名在跑任何 git 命令之前就被拒绝', async () => {
+  const stub = stubSubprocess(readerReplies({ exitCode: 0 }))
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  for (const bad of ['--force', '-D', 'a'.repeat(300), 'feat\nx', '', null, 'feat\u0007x']) {
+    const outcome = await reader.switchBranch('/repo', bad, new AbortController().signal)
+    assert.equal(outcome.ok, false, `${String(bad)} 必须被拒`)
+    assert.equal(outcome.code, 'invalid')
+  }
+  assert.equal(stub.ranSwitch(), false, '非法名不得触发 git switch')
+})
+
+test('git 状态：不在本地清单里的分支不会交给 git', async () => {
+  const stub = stubSubprocess(readerReplies({ exitCode: 0 }))
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'origin/main', new AbortController().signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'unknown')
+  assert.equal(stub.ranSwitch(), false, '白名单之外不得触发 git switch')
+})
+
+test('git 状态：git 拒绝切换时原样回传 stderr 首行', async () => {
+  const refusal = {
+    exitCode: 1,
+    stderr: 'error: Your local changes to the following files would be overwritten by checkout:\n\tlib/client.js\nPlease commit your changes or stash them before you switch branches.\nAborting\n',
+  }
+  const stub = stubSubprocess(readerReplies(refusal))
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'feat/x', new AbortController().signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'refused')
+  assert.match(outcome.message, /Your local changes/)
+  assert.equal(stub.ranSwitch(), true)
+})
+
+test('git 状态：切换成功后直接回一份新读数（分支已换）', async () => {
+  const after = '# branch.oid 9999999\n# branch.head feat/x\n'
+  const stub = stubSubprocess(readerReplies({ exitCode: 0, stderr: "Switched to branch 'feat/x'\n" }, after))
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'feat/x', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.payload.branch, 'feat/x')
+  assert.deepEqual(outcome.payload.branches.map((b) => b.name), ['main', 'feat/x'])
+  assert.equal(outcome.payload.added, 3)
+})
+
+//#endregion
+
+//#region CR-0002 评审整改（A1 / A3 / B1 / B4 / C4）
+
+test('A1：浏览器断连不得打断已经开始的切换', async () => {
+  const controller = new AbortController()
+  // 白名单查询（读）用调用方 signal；一旦它开始就模拟"页面被关掉"。
+  const stub = stubSubprocess(
+    (argv) => {
+      const line = argv.slice(1).join(' ')
+      if (line.startsWith('switch')) return { exitCode: 0, stderr: "Switched to branch 'feat/x'\n" }
+      if (line.startsWith('for-each-ref') && !line.includes('%(HEAD)')) return { exitCode: 0, stdout: REFS_NAMES }
+      if (line.startsWith('for-each-ref')) return { exitCode: 0, stdout: REFS_PICKER }
+      if (line.startsWith('status')) return { exitCode: 0, stdout: '# branch.head feat/x\n' }
+      if (line.startsWith('diff')) return { exitCode: 0, stdout: '' }
+      if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+      return { exitCode: 0, stdout: '' }
+    },
+    (spec) => {
+      if (spec.argv.slice(1).join(' ').startsWith('for-each-ref') && !spec.argv.includes('%09%(HEAD)')) controller.abort()
+    }
+  )
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'feat/x', controller.signal)
+  assert.equal(controller.signal.aborted, true, '前置读之后调用方 signal 已经中止')
+  assert.equal(outcome.ok, true, '写操作不该因为浏览器断连而失败')
+  const write = stub.spawns.find((entry) => entry.argv.includes('switch'))
+  assert.ok(write !== void 0, '确实执行了 switch')
+  assert.notEqual(write.signal, controller.signal, '写操作不得复用请求的 signal')
+  assert.equal(write.signal.aborted, false, '写操作用的是自己的超时 signal')
+})
+
+test('A3：被拒时带上挡路的文件，而不是半句冒号', async () => {
+  const refusal = {
+    exitCode: 1,
+    stderr: 'error: Your local changes to the following files would be overwritten by checkout:\n\tlib/client.js\nPlease commit your changes or stash them before you switch branches.\nAborting\n',
+  }
+  const stub = stubSubprocess(readerReplies(refusal))
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'feat/x', new AbortController().signal)
+  assert.equal(outcome.code, 'refused')
+  assert.match(outcome.message, /would be overwritten by checkout:/)
+  assert.match(outcome.message, /lib\/client\.js/, '冒号后面那份文件清单必须留下')
+  assert.ok(outcome.message.length <= 200, '仍然有长度上限')
+})
+
+test('B1：没有 git switch 的老 git 回退到 checkout', async () => {
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('switch')) return { exitCode: 1, stderr: "git: 'switch' is not a git command. See 'git --help'.\n" }
+    if (line.startsWith('checkout')) return { exitCode: 0, stderr: "Switched to branch 'feat/x'\n" }
+    if (line.startsWith('for-each-ref') && !line.includes('%(HEAD)')) return { exitCode: 0, stdout: REFS_NAMES }
+    if (line.startsWith('for-each-ref')) return { exitCode: 0, stdout: REFS_PICKER }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: '# branch.head feat/x\n' }
+    if (line.startsWith('diff')) return { exitCode: 0, stdout: '' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.switchBranch('/repo', 'feat/x', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  const checkout = stub.calls.find((argv) => argv.includes('checkout'))
+  assert.deepEqual(checkout, ['/usr/local/bin/git', 'checkout', 'feat/x'], '回退形式不带 --（名字已过白名单）')
+})
+
+test('B4：切换期间在飞的那次读，不能把旧分支写回缓存', async () => {
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  let statusCalls = 0
+  const stub = stubSubprocess(async (argv) => ({ exitCode: 0, stdout: '', stderr: '' }))
+  // 手写一个可控替身：第一次 status 卡住，其余立刻返回
+  const subprocess = {
+    async resolveExecutable() { return '/usr/local/bin/git' },
+    spawn(spec) {
+      const line = spec.argv.slice(1).join(' ')
+      const canned = (() => {
+        if (line.startsWith('for-each-ref') && !line.includes('%(HEAD)')) return { exitCode: 0, stdout: REFS_NAMES }
+        if (line.startsWith('for-each-ref')) return { exitCode: 0, stdout: 'main\t*\nfeat/x\t\n' }
+        if (line.startsWith('switch')) return { exitCode: 0, stderr: '' }
+        if (line.startsWith('diff')) return { exitCode: 0, stdout: '' }
+        if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+        if (line.startsWith('status')) {
+          statusCalls += 1
+          if (statusCalls === 1) return { exitCode: 0, stdout: '# branch.head main\n', gate: true }
+          return { exitCode: 0, stdout: '# branch.head feat/x\n' }
+        }
+        return { exitCode: 0, stdout: '' }
+      })()
+      const text = { text: canned.stdout ?? '', lossy: false }
+      const finish = () => ({ exitCode: canned.exitCode, stdout: text, stderr: { text: canned.stderr ?? '' } })
+      return {
+        done: canned.gate === true ? gate.then(finish) : Promise.resolve(finish()),
+        collected: {
+          stdout: { readFrom: () => ({ text: canned.stdout ?? '', lossy: false }) },
+          stderr: { readFrom: () => ({ text: canned.stderr ?? '' }) },
+        },
+      }
+    },
+  }
+  const reader = createGitStatusReader({ subprocess })
+  const stale = reader.read('/repo', new AbortController().signal)   // 卡在第一次 status
+  await new Promise((r) => setTimeout(r, 10))
+  const outcome = await reader.switchBranch('/repo', 'feat/x', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.payload.branch, 'feat/x', '切换后立刻读到的必须是新分支（没有并进那次在飞的旧读）')
+  release()                                                          // 放行那次旧读
+  await stale
+  const after = await reader.read('/repo', new AbortController().signal)
+  assert.equal(after.branch, 'feat/x', '旧读结束时不得把 main 写回缓存')
+})
+
+test('C4：路由把四种结果映射成 400 / 404 / 409 / 200', async () => {
+  const route = gitStatusRoute(
+    { sessions: { get: (id) => (id === 'ok' ? { header: { cwd: '/repo' } } : undefined) } },
+    {
+      read: async () => ({ branch: 'main' }),
+      switchBranch: async (cwd, branch) =>
+        branch === 'nope' ? { ok: false, code: 'unknown', message: 'No such local branch: nope' }
+          : branch === 'dirty' ? { ok: false, code: 'refused', message: 'error: overwritten by checkout: a.txt' }
+            : { ok: true, payload: { branch } },
+    }
+  )
+  const call = async (method, id, body) => {
+    const request = new Request('http://x' + route.path + (id === void 0 ? '' : '?sessionId=' + id), {
+      method,
+      ...(body === void 0 ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }),
+    })
+    const response = await route.fetch(request)
+    return { status: response.status, body: await response.json().catch(() => null) }
+  }
+  assert.deepEqual(route.methods, ['GET', 'POST'])
+  assert.equal((await call('GET', void 0)).status, 400, '缺 sessionId')
+  assert.equal((await call('GET', 'ghost')).status, 404, '会话不存在')
+  assert.equal((await call('GET', 'ok')).status, 200)
+  assert.equal((await call('POST', 'ok', { branch: 'nope' })).status, 400, '清单外分支')
+  assert.equal((await call('POST', 'ghost', { branch: 'feat/x' })).status, 404, '查询串里的会话不存在')
+  assert.equal((await call('POST', 'ok', { branch: 'dirty' })).status, 409, 'git 拒绝 → 409')
+  const ok = await call('POST', 'ok', { branch: 'feat/x' })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.ok, true)
+  assert.equal(ok.body.payload.branch, 'feat/x')
+})
+
+test('C4：超大 body 直接 413，不进解析', async () => {
+  const route = gitStatusRoute({ sessions: { get: () => ({ header: { cwd: '/repo' } }) } }, { read: async () => null, switchBranch: async () => ({ ok: false, code: 'unknown', message: 'x' }) })
+  const response = await route.fetch(new Request('http://x' + route.path, {
+    method: 'POST',
+    body: '{}',
+    headers: { 'content-type': 'application/json', 'content-length': '9000' },
+  }))
+  assert.equal(response.status, 413)
+})
+
+//#endregion

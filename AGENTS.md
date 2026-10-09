@@ -46,7 +46,7 @@
 对下面这些接口**连续误判 6 次**——因为契约此前只存在于实现里。**签名与返回契约以实现为准，
 本节是它的可读副本；发现不一致时先改本节。**
 
-### `lib/host-v13.js`
+### `lib/host-v18.js`
 
 ```js
 isPeakTime(ms, holidays = new Set(DEFAULT_HOLIDAYS)) -> boolean
@@ -72,9 +72,31 @@ rememberProse(id, prose) -> void
 readProcessMemory() -> { rss, heapUsed } | null
     // 无 process 时返回 null。
 
-PROJECTION_KEY / QUOTE_MARK_PREFIX / QUOTE_MARK_ID_LENGTH
+PROJECTION_KEY / QUOTE_MARK_PREFIX / QUOTE_MARK_ID_LENGTH / QUICK_ACTIONS_KEY / GIT_STATUS_ROUTE
     // 跨端契约常量，两端各有一份拷贝（不能共享模块），由
     // test/contracts.test.mjs 断言两边相等。见下面「公开契约」。
+
+parseGitStatus(stdout) -> { branch, detached, head, upstream, ahead, behind, files, untracked }
+    // 入参是 `git status --porcelain=v2 --branch` 的 stdout。
+    // ⚠ 只看行首：`1 `/`2 `/`u ` 计入 files，`? ` 计入 untracked，`! ` 忽略。
+    // ⚠ `(detached)` 时 branch=null、head=短 sha；没有 upstream 时 ahead/behind 是 null（不是 0）。
+
+parseNumstatTotals(stdout) -> { files, added, deleted }
+    // 入参是 `git diff --numstat` 的 stdout；二进制侧是 `-`，不计入行数。
+
+parseBranches(stdout) -> [{ name, current }]
+    // 入参是 `git for-each-ref --sort=-committerdate --format=%(refname:short)%09%(HEAD) refs/heads`。
+    // **当前分支排最前**，其余保持 git 的近因序。
+
+createGitStatusReader(ctx) -> { read(cwd, signal), switchBranch(cwd, branch, signal) }   // 需要 ctx.subprocess
+    // read 解析 `{root,branches,branch,detached,head,upstream,ahead,behind,files,added,deleted,untracked}`；
+    // 不是 git 仓库 / 没有可用 git 时返回 null。
+    // 同一 cwd 0.7s 内复用，并发合流；status 与 diff 并行，toplevel 只读一次、分支清单 4s 内复用；
+    // 单次稳态读数 ≈2 条 git 命令 ~40ms。git 命令带超时、输出上限与清洗过的环境。
+    // ⚠ switchBranch 是**本插件唯一的写操作**（CR-0002）：先与本地分支清单白名单比对，
+    //    再用 argv 执行 `git switch -- <branch>`；不用 -f / --discard-changes / stash / reset，
+    //    git 拒绝时把 stderr 首行原样回传（`{ok:false, code:'refused', message}`），
+    //    成功后失效该 cwd 的读缓存并回一份新读数。
 ```
 
 ### `lib/client.js`
@@ -85,6 +107,9 @@ pickTurn(turns, activeTurn) -> turn | null
 describeScope(scope, t, title) -> string   // 悬停账单的多行文本
 readActiveTurn() -> number | null          // 读右侧刻度当前选中项
 quoteMark(messageId) -> string             // 客户端写出的引用标记（端到端由契约测试守卫）
+describeGitStatus(data, t) -> { branch, branches, files, hasTotals, added, deleted, untracked, title }
+    // 宿主载荷 → 胶囊要画的字段；纯函数，单测覆盖（分支清单过滤、detached 回退、千位分隔）。
+    // 组件 GitStatusCell 只用它；`data-git-branches` 只有分支数 > 1 时才出现在按钮上。
 registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
     // ⚠ 同一实例内重复 id 会被**跳过并返回 null**（AUD-OPS-001 的整改）。
     // ⚠ 注册表拒绝时吞掉异常、记录一条降级日志，返回 null——不连累其他插槽。
@@ -128,7 +153,9 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 
 | 契约 | 位置 | 规则 |
 |---|---|---|
-| 投影 `sessionCost`（stateVersion 3） | 宿主 ↔ 客户端**唯一**数据契约 | 只存 token 数与计数，**不存金额、单价、汇率** |
+| 投影 `sessionCost`（stateVersion 3） | 宿主 → 客户端的数据契约之一 | 只存 token 数与计数，**不存金额、单价、汇率** |
+| 投影 `quickActions`（stateVersion 1） | 宿主 → 客户端 | 只带按钮清单（配置的只读投影） |
+| 认证路由 `GET\|POST /api/sym.git`（CR-0001 + CR-0002） | 宿主 ↔ 客户端的 Git 读数与**分支切换** | 常量 `GIT_STATUS_ROUTE` 两端各一份（契约测试守卫）；字段清单见 `.project-architect.json` 的 `contracts.gitStatusRoute`；GET 读数、POST 只做 `git switch`（白名单 + argv + `--`，不 `-f`/不 stash/不 reset）；不调托管平台 API、不碰凭据，非仓库一律 404 |
 | 引用标记 `@引用#<12位id>` | 客户端写入、宿主展开 | **两端必须同步改** |
 | `lib/prices.json` 字段 | 对用户可见 | `usdToCny` / `holidays` / `models`，破坏性变更需 CR |
 | `data-sym-*` DOM 属性 | 供验证脚本定位 | **非稳定 API**，可改但需同步测试 |
@@ -136,12 +163,15 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 ### 跨端契约的单一事实源（AUD-ARCH-001 的整改，2026-09-30）
 
 两端**不能共享模块**（客户端是浏览器 module factory，宿主是 Node 模块），所以
-`PROJECTION_KEY`、`QUOTE_MARK_PREFIX`、`QUOTE_MARK_ID_LENGTH` 在两端各有一份拷贝：
+`PROJECTION_KEY`、`QUOTE_MARK_PREFIX`、`QUOTE_MARK_ID_LENGTH`、`QUICK_ACTIONS_KEY`、
+`GIT_STATUS_ROUTE` 在两端各有一份拷贝：
 
 | 常量 | 宿主 | 客户端 |
 |---|---|---|
-| `PROJECTION_KEY` | `lib/host-v13.js` 顶部 | `lib/client.js` 的 contract 区 |
+| `PROJECTION_KEY` | `lib/host-v18.js` 顶部 | `lib/client.js` 的 contract 区 |
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
+| `QUICK_ACTIONS_KEY` | 同上 | 同上 |
+| `GIT_STATUS_ROUTE` | 同上 | 同上 |
 
 **守卫在 `test/contracts.test.mjs`**：它断言两边相等，并用"客户端生成标记 → 宿主展开"
 证明两端真的对得上。**改任何一端都要跑 `npm test`**——失配不会报错，只会表现为
@@ -181,12 +211,39 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 
 ## 环境事实（省得重新查）
 
+- **DSH 自带终端，且 dsh-sym 不做终端入口（2026-10-09 用户决定，勿再提议）**：
+  终端由 `@deepseek-ai/dsh-client-ui-sidebar-terminal` 提供，注册为**右侧栏**的标签类型
+  `kind: "terminal"`（多开、选 shell、只读页可"接管输入"），入口只有两个 —— 快捷键
+  `terminal.new` = **Control + `**（各平台默认一致，别名 `shell` / `new terminal`），以及右侧栏
+  标签行的「+」→「新建终端」；**左侧栏的图标列表（`sidebar.panellist`）里没有它**，所以容易
+  以为"DSH 没有终端"。用户的诉求是"你能自动跑命令就行"，因此**不加入口**；要做的话得走官方内部
+  服务 `sidebarRightTabs` / `sidebarRight`（会是本插件第三个内部依赖），且 terminal 的标签地址
+  方案**未验证**。
+- 模型侧另有一套 `terminal_open / read / write / signal / close / list` 工具（持久终端），
+  但**当前会话的工具集里没有投给 Agent**：Agent 跑命令走的是 `bash`（非交互、一次性、带超时
+  与输出上限），交互式 TTY、需要人输密码/确认的场景做不了。
+
 - `DSH_HOME=/Users/long/.dsh`；本项目位于 `~/GitHub/DSH-Sym`（2026-09-30 搬出 profile 的
   `plugins/` 目录）。它靠 `~/.dsh/profiles/desktop/cordis.patch.yml` 里的 `file://` 条目挂载 ——
   **换路径后必须重启 App**，宿主手里的还是旧绝对路径
+- ⚠ **上面这条在 2026-10-08 之后已经不成立（2026-10-09 实测更正）**：`~/.dsh/profiles/desktop`
+  改成了**包安装** —— `package.json` 的依赖是 `dsh-sym: github:seeseeczl/dsh-sym`（pnpm 装在
+  `node_modules/dsh-sym`，锁定 commit `eed6b3f` = 1.5.0），profile 的 `cordis.patch.yml` 里那条
+  `file://` 已被删掉。**后果：改工作副本（`~/GitHub/DSH-Sym`）不会进正在运行的 App**，
+  界面读的是 `node_modules/dsh-sym` 里那一份。
+  - 两条实测结论：① profile patch 里 `- id: sym-cost` + `name: file://…` 这种**id 定向覆盖改不动
+    `name`**（补丁层只覆盖 `config`）；② entry 的 specifier 还是 `dsh-sym` 时，**宿主模块被模块
+    缓存钉住**，把包内文件换成新内容、甚至改 `package.json` 的 `main` 到新文件名都不生效
+    （与下面「宿主代码不热重载」同源，只是换文件名的招数在包形态下失效）。
+  - 想在**不重启 App**的前提下用工作副本，现在可行的做法：给 profile patch 追加一条**新 id 的
+    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v18.js`），
+    `set_plugin` 打开它、并把 `include:sym-cost` 关掉。**必须关掉包安装那条**：两条都提供
+    `dsh-sym` 时，客户端模块图按包名去重，只会发出包安装那份 `client.js`（宿主新、客户端旧）。
+  - 长期方案：把 profile 依赖改成 `link:`/`file:` 指向工作副本，或重建 `file://` 挂载 —— 两者都
+    需要一次 App 重启。
 - **`file://` 挂载 ≠ 不是插件**（2026-10-01 查 asar 证实）：loader 里有 `nearestPackage()`
   （asar 偏移 18777873），拿到 `file://` 入口后会**向上找最近的 `package.json`** 当包根。
-  所以 `file:///…/lib/host-v13.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
+  所以 `file:///…/lib/host-v18.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
   `exports["./client"]` + `dsh.client` 解析 —— 与包安装的**唯一**差别是入口由绝对路径给出，
   而不是由 profile 的 `node_modules` 解析。
   选它是为了开发期的迭代速度：改 `lib/client.js` 刷新即生效、改 `prices.json` 即时生效、

@@ -102,7 +102,7 @@ D 的代价是要量 DOM 定位（`_sidebarCol` 的 class 是哈希前缀，官�
 
 ```yaml
 - id: sym-cost
-  name: 'file:///…/lib/host-v13.js'
+  name: 'file:///…/lib/host-v18.js'
   config:
     buttons:
       - { id: compact, label: 压缩上下文, icon: compress, kind: command, value: "/compact" }

@@ -8,10 +8,10 @@
   "modules": [
     {
       "id": "M-HOST",
-      "path": "lib/host-v13.js",
+      "path": "lib/host-v18.js",
       "kind": "host",
-      "role": "投影折叠、三级价目来源、引用展开、进程内存读数",
-      "publicContract": ["sessionCost projection (stateVersion 3)", "readProcessMemory()"],
+      "role": "投影折叠、三级价目来源、引用展开、进程内存读数、Git 读数路由（读 + 只切分支）",
+      "publicContract": ["sessionCost projection (stateVersion 3)", "readProcessMemory()", "GET|POST /api/sym.git (CR-0001 + CR-0002)", "parseGitStatus / parseBranches / parseNumstatTotals / createGitStatusReader / gitStatusRoute"],
       "changeCost": "high",
       "changeProcedure": "停用插件 → 换新文件名 → 同步全部引用 → 启用。换名与同步引用走 scripts/reload-host.mjs（默认 dry-run，--apply 才写盘；历史审计产物不改写）；停用/启用与重启必须人工完成。直接改内容或只改文件名都会因宿主模块缓存而不生效。"
     },
@@ -19,7 +19,7 @@
       "id": "M-CLIENT",
       "path": "lib/client.js",
       "kind": "client",
-      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单",
+      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单、会话头部 Git 胶囊（读数 + 分支切换菜单）",
       "publicContract": [
         "data-sym-cost-part",
         "data-sym-turn-cost",
@@ -31,7 +31,10 @@
         "data-sym-cache-saved",
         "data-sym-offpeak-saved",
         "data-sym-would-have-cost",
-        "data-sym-move-nudge"
+        "data-sym-move-nudge",
+        "data-git-status",
+        "data-git-branches",
+        "data-git-picker"
       ],
       "changeCost": "low",
       "changeProcedure": "保存即热更新，无需重启。"
@@ -68,20 +71,20 @@
 
   "loc": {
     "$comment": "净新增阈值为任务卡约束：单卡至多 5 个生产文件、净新增至多 300 行。此处记录当前基线，用于判断增长是否异常。",
-    "baselineAt": "2026-09-30",
+    "baselineAt": "2026-10-09",
     "byModule": {
-      "M-HOST": 906,
-      "M-CLIENT": 1465
+      "M-HOST": 1546,
+      "M-CLIENT": 3310
     },
-    "productionTotal": 2371,
+    "productionTotal": 4856,
     "taskLimits": {
       "maxProductionFilesPerTask": 5,
       "maxNetAddedProductionLinesPerTask": 300
     },
     "hardCeiling": {
-      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。为当前最大模块（client 1349）留出约 2.2 倍余量。",
+      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。客户端半边不能拆文件（file:// 挂载没有 bundle URL，require.async 解析不了 chunk），M-CLIENT 的余量只能靠就地压缩或由 CR 调整阈值维持：CR-0001 把 3000 提到 3300，CR-0002 评审整改实到 3274（仅剩 26 行），故再提到 3400。下次客户端功能若再逼近，必须先就地压缩。",
       "M-HOST": 1800,
-      "M-CLIENT": 3000
+      "M-CLIENT": 3400
     }
   },
 
@@ -99,11 +102,18 @@
     },
     "crossEndConstants": {
       "$comment": "两端不能共享模块（客户端为浏览器 module factory，宿主为 Node 模块），故各持一份拷贝。",
-      "constants": ["PROJECTION_KEY", "QUOTE_MARK_PREFIX", "QUOTE_MARK_ID_LENGTH"],
+      "constants": ["PROJECTION_KEY", "QUOTE_MARK_PREFIX", "QUOTE_MARK_ID_LENGTH", "QUICK_ACTIONS_KEY", "GIT_STATUS_ROUTE"],
       "guard": "test/contracts.test.mjs 断言两端常量相等，并用「客户端生成标记 → 宿主展开」做端到端验证。改动任一端必须跑 npm test。"
     },
     "tierPricing": {
       "rule": "谷时价格为峰时的一半；峰时窗口为北京时间周一至周五 09:00–12:00 与 14:00–18:00，法定节假日除外。只有 peakPriced 的模型参与谷时折扣。"
+    },
+    "gitStatusRoute": {
+      "$comment": "CR-0001。本插件第一条非投影的宿主↔客户端契约；官方同类通道见 dsh-client-ui-deliverables 的 /api/changes.summary。",
+      "route": "GET /api/sym.git?sessionId=<SessionId> | POST /api/sym.git { sessionId, branch }（sessionId 也可放查询串）",
+      "constant": "GIT_STATUS_ROUTE（两端各一份，test/contracts.test.mjs 守卫）",
+      "fields": ["root", "branches[]:{name,current}", "branch", "detached", "head", "upstream", "ahead", "behind", "files", "added", "deleted", "untracked"],
+      "rule": "读 + **只切分支**（CR-0002）：GET 读数（200/400/404），POST 先与本地分支白名单比对再用 argv 执行 `git switch -- <branch>`（无 switch 的老 git 回退 `git checkout <branch>`），状态码 200 / 400 / 404 / 409（git 拒绝）/ 413（body 过大）；**写操作不复用请求 signal**（浏览器断连不得打断切换）；每次 GET 现读 git：status + diff 并行，toplevel 按目录只读一次、分支清单 4s 内复用，故稳态每轮 2 条命令（~40ms）；读缓存按 cwd 0.7s 合流多实例，切换后失效并让在飞的那次读失效。客户端 2s 轮询 + 失败快速重试 + 轮次结束立刻重读。不 add/commit/push、不用 -f/--discard-changes/stash/reset、不取 remote、不调托管平台 API、不碰凭据、不做 PR 链接。破坏性变更需 CR。"
     }
   },
 
