@@ -262,6 +262,14 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
   也可能是错觉。**唯一可靠判据**是
   `~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows` 里
   **有没有你新加的投影 key**（或老 key 的 `val` 有没有按你的新代码变化）。
+- ⚠ **同一个坑在"更新包"时表现为硬失败（2026-10-09 实测）**：加载器记住的是**boot 那一刻解析出的入口路径**。
+  `pnpm update dsh-sym` 把包从 1.5.0 换成 1.6.0 后，`lib/host-v13.js`（boot 时记录的入口）已不存在，
+  于是 `set_plugin include:sym-cost true` 直接报 `sym-cost (dsh-sym): failed to import`。
+  **不改代码、不重启的解法**：在安装好的包里把旧入口路径补成一个一行再导出
+  （`lib/host-v13.js` → `export * from './host-v18.js'`），再"停用 → 启用"即可；
+  本机 profile 的 `node_modules/dsh-sym` 里现在就有这么一份 shim（**它不属于发布产物**，
+  下次 `pnpm install` 会被清掉，清掉后要重启 App 才能重新装配这个 entry）。
+  → 结论：**换包 + 不重启 App** 是有条件的；干净做法仍然是重启。
 - 流程必须是三步：**换文件名 → 停用插件 → 启用插件**。只换文件名不够（模块缓存），
   而且 HMR 只会重新组合配置、不会重载插件代码。停用/启用可以在会话里用插件管理器直接做
   （`set_plugin`，entryId 是 `include:sym-cost`），**不必重启 App**：
