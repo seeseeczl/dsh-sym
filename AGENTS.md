@@ -39,6 +39,51 @@
 5. **视觉常量必须先查官方源码。** 面板配色曾因猜测 `--dsw-alias-bg-elevated` 而与官方不一致，
    正确值是 `--dsw-specific-menu`。官方弹层的标准配方：
    `--dsw-specific-menu` + `--dsw-elevation-prominent` + `--dsw-radius-lg` + `--dsw-menu-backdrop-filter`。
+   - **头部控件的"形制"也有现成样板**：`dsh-client-ui-open-in-app` 的分体按钮是
+     `border:.5px solid var(--dsw-alias-border-l4)` + `border-radius:var(--dsw-radius-sm)` + `height:24px`。
+     Git 胶囊（`.dshGit_root`）就是抄这一套，所以它看起来是那排原生控件的一员。
+   - **图标（`QUICK_ICONS`）的尺寸必须是"整数倍 + 落在像素栅格上"**（2026-10-09 修）：
+     这 105 枚是按 **16 格 viewBox + 1.3 描边**手绘的，而**坐标多是 0.8 的倍数**（0.8 = 16/20，
+     即设计格其实是 20 分割）。所以对这个集合：`0.8 × 缩放 × DPR = 设备像素` —— 在 2x 屏上
+     缩放 **1.25（= 显示 20px）** 才让坐标落在**整数设备像素**上。
+     竖条原来写的是 **19.8px**（1.2375 倍）＝非整数缩放 → 坐标落在不规则子相位 → 看着"糊"；
+     现已改成 20px，设置页的图标格也从 24px（1.5 倍）改成 20px。
+     **规则**：改图标尺寸只走"设计格的整数倍"（20px 一档最稳），别再写 19.8 / 24 这类值；
+     竖条的间距/内距也回到 4 的刻度（原来是 4.4 / 5，既分数又不在刻度上）。
+     ⚠ 本条只解决**对齐**；若仍觉笔画发毛，下一个杠杆是**描边重量**（1.3 → 1.2/1.5），
+     那属于品味判断，别擅自定。
+   - **图标有"大小校正表"`ICON_FIT`（2026-10-09 加）**：这 105 枚是分批手绘的，墨迹范围从
+     7.4 到 15.8 格不等（极差 8.4）、还有 15 枚墨迹中心偏格心 >0.6 格 → 排在一起大小不一、
+     看着不齐。校正规则：按**墨迹包围盒**（含半个描边，曲线采样展平、圆弧转中心参数化）
+     把较大边归一到 **12 格 × ZOOM**、并把墨迹中心回正到 (8,8)，缩放系数夹在
+     **[0.75, 1.30] × ZOOM**。归一后极差 **8.40 → 2.39**。
+     - **`ZOOM`（整体缩放的唯一旋钮）**：1.0 原始 → **1.2**（用户："整体再大 20%"）→
+       **1.08**（同日用户："所有图标缩小 10%"，即 1.2 × 0.9）。它同时乘到归一目标上，
+       所以每次调整都是**全集合均匀**缩放（实测 105/105 枚比例一致，偏差 ≤0.0006 的三位小数取整）。
+       **渲染框仍是 20px**，不是把 SVG 放到 24px —— 所以像素栅格对齐不会被破坏；
+       笔宽也照旧不变（渲染侧除以 k 抵消）。**改这个值只需重跑生成器**，
+       测试里的断言已写成"与 ZOOM 无关"（只查收敛性与边距），不用跟着改。
+     - **第二次校正（同日，用户："这时再去校正一下大小差距"）**：放大后差距重新可见，来源有两处，
+       都已收掉 —— ① 原夹取上限 `[0.75,1.3]×ZOOM` 把 `dot`(11.54) / `square`(14.04) 挡在目标外，
+       现放宽到 **[0.7, 2.0]**（不再对任何一枚生效，只当保险）；② 补上**光学补偿**：
+       圆形为主的字形按规范外扩 **+2%**（`ROUND_BUMP`，判定规则＝存在直径 ≥ 85% 墨迹较大边的
+       `circle`，实测 8 枚：compassRose / treeRings / dot / help / clock / ring / info / globe）。
+       结果：校正后墨迹 **14.39 ~ 14.69，极差 0.298**（原 8.40 → 上一步 2.86 → 0.30）；
+       随后 ZOOM 由 1.2 调到 1.08，整簇等比缩到 **12.95 ~ 13.22**（最大/最小 1.021，关系不变）。
+     - 表由 `scripts/fit-icons.mjs` 生成（`--write` 写回 `lib/client.js` 的 `#region ICON_FIT`），
+       **改了 `QUICK_ICONS` 的图形数据就要重跑**，否则校正值会与新形状不匹配。
+     - **笔宽不受影响**：渲染时按 k 缩放，同时把描边写成 `QUICK_ICON_STROKE / k`，
+       组内 transform 再乘回 k → 屏幕上仍是原笔宽。守卫在 `test/client.test.mjs`
+       （覆盖全 105 枚 + 系数区间 + 笔宽守恒 + 抽查 square 放大 / infinity 收小 / ring 不动）。
+     - ⚠ 只做"尺寸归一"，**没做光学家族补偿**（规范 `V3.3`：圆形应外扩 2–4%、三角形 6–10%）。
+       要更讲究可以再加，但那属于品味判断。
+   - ⚠ **`--dsh-content-font-delta` / `--dsh-content-font-delta-secondary` 是否真有值，没有被证实
+     （2026-10-09 查）**：这两个名字只在外壳 CSS 里被 `var()` **引用**，在
+     `@deepseek-ai` 插件包、外壳的两个 CSS 资源、`index.html`、外壳的两个 JS 资源里都**找不到定义**；
+     但 `--dsw-alias-*` 同样找不到定义 —— 说明主题令牌是**运行时注入**的，所以"找不到定义"不等于不存在。
+     → 结论与约定：**别拿它当"自适应"的依据**（`.dshSymTurnCost` 里那句
+     `height:calc(28px + var(--dsh-content-font-delta,0px))` 很可能恒等于兜底 0）；
+     要跟字号自适应就用**不依赖令牌**的写法：`min-height` + 内容撑高（Git 胶囊现在就是这么做的）。
 
 ## 接口契约（**改动前先读这里**）
 
@@ -46,7 +91,7 @@
 对下面这些接口**连续误判 6 次**——因为契约此前只存在于实现里。**签名与返回契约以实现为准，
 本节是它的可读副本；发现不一致时先改本节。**
 
-### `lib/host-v18.js`
+### `lib/host-v19.js`
 
 ```js
 isPeakTime(ms, holidays = new Set(DEFAULT_HOLIDAYS)) -> boolean
@@ -115,6 +160,25 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
     // ⚠ 注册表拒绝时吞掉异常、记录一条降级日志，返回 null——不连累其他插槽。
     // ⚠ `extra` 合并进注册选项；传 `{ locale: null }` 等于**删掉** locale 字段。
     //    它是"要不要给条目注入 `t`"的开关，**不控制渲染** —— 见下面「槽的 locale 声明」。
+
+installSessionMenu(ctx) -> void
+    // 侧栏会话「⋯」菜单的两项。槽是 list 型，**纯加法**（官方四项 100/200/300/400 不动）：
+    //   `sym-copy-session-id` (order 900，带 `separatorBefore` → 自带官方发丝分隔线)
+    //   `sym-export-session`  (order 901)
+    // ⚠ 导出项写在 `ctx.inject(["sessionLogDownload"], …)` 里：**服务拿不到就根本不注册**，
+    //    不是"注册一个渲染 null 的空条目"（那会在菜单里留一条看不见的空行）。
+    // ⚠ 两项的槽组件都以 `slotProps.sessionId` 为准；文案走 `tr(props.t, …)`。
+
+copyPlainText(primitives, text) -> Promise<boolean>
+    // 官方 `writeClipboard` 优先（它把失败折成 `false`），否则回落裸 `navigator.clipboard.writeText`
+    // （它用 reject 表示失败，这里也折成 `false`）。两条路径统一成一个布尔值。
+
+CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
+    // props：`{ sessionId, useMenuOpenState, t }`，导出项另加 `{ useSessionLogDownload, request }`。
+    // ⚠ **所有 hook 必须在任何 return 之前** —— 槽组件的老坑（见下面「槽组件里所有 hook…」）。
+    // ⚠ 两者都在 primitives（`MenuItemButton`）缺失时返回 null。
+    // ⚠ 复制项：**成功才关菜单**；失败时保持菜单打开并把文案换成 `copySessionIdFailed` ——
+    //    关掉菜单会让"点了但剪贴板是空的"变成静默欺骗。
 ```
 
 ### 降级日志（`noteDegrade`）
@@ -155,6 +219,7 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 |---|---|---|
 | 投影 `sessionCost`（stateVersion 3） | 宿主 → 客户端的数据契约之一 | 只存 token 数与计数，**不存金额、单价、汇率** |
 | 投影 `quickActions`（stateVersion 1） | 宿主 → 客户端 | 只带按钮清单（配置的只读投影） |
+| 投影 `contextLoss`（stateVersion 1，CR-0004） | 宿主 → 客户端 | 只存计数与 token 数（`compactions` / `prunes` / `lostTokens` / `lastTurn` / `lastFailed`），**不存摘要文本**；只有 `compaction/summary` 与 `compaction/prune` 计数（start/end 不算，否则失败或取消的压缩会被算成成功） |
 | 认证路由 `GET\|POST /api/sym.git`（CR-0001 + CR-0002） | 宿主 ↔ 客户端的 Git 读数与**分支切换** | 常量 `GIT_STATUS_ROUTE` 两端各一份（契约测试守卫）；字段清单见 `.project-architect.json` 的 `contracts.gitStatusRoute`；GET 读数、POST 只做 `git switch`（白名单 + argv + `--`，不 `-f`/不 stash/不 reset）；不调托管平台 API、不碰凭据，非仓库一律 404 |
 | 引用标记 `@引用#<12位id>` | 客户端写入、宿主展开 | **两端必须同步改** |
 | `lib/prices.json` 字段 | 对用户可见 | `usdToCny` / `holidays` / `models`，破坏性变更需 CR |
@@ -168,7 +233,7 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 
 | 常量 | 宿主 | 客户端 |
 |---|---|---|
-| `PROJECTION_KEY` | `lib/host-v18.js` 顶部 | `lib/client.js` 的 contract 区 |
+| `PROJECTION_KEY` | `lib/host-v19.js` 顶部 | `lib/client.js` 的 contract 区 |
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
 | `QUICK_ACTIONS_KEY` | 同上 | 同上 |
 | `GIT_STATUS_ROUTE` | 同上 | 同上 |
@@ -236,14 +301,14 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
     缓存钉住**，把包内文件换成新内容、甚至改 `package.json` 的 `main` 到新文件名都不生效
     （与下面「宿主代码不热重载」同源，只是换文件名的招数在包形态下失效）。
   - 想在**不重启 App**的前提下用工作副本，现在可行的做法：给 profile patch 追加一条**新 id 的
-    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v18.js`），
+    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v19.js`），
     `set_plugin` 打开它、并把 `include:sym-cost` 关掉。**必须关掉包安装那条**：两条都提供
     `dsh-sym` 时，客户端模块图按包名去重，只会发出包安装那份 `client.js`（宿主新、客户端旧）。
   - 长期方案：把 profile 依赖改成 `link:`/`file:` 指向工作副本，或重建 `file://` 挂载 —— 两者都
     需要一次 App 重启。
 - **`file://` 挂载 ≠ 不是插件**（2026-10-01 查 asar 证实）：loader 里有 `nearestPackage()`
   （asar 偏移 18777873），拿到 `file://` 入口后会**向上找最近的 `package.json`** 当包根。
-  所以 `file:///…/lib/host-v18.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
+  所以 `file:///…/lib/host-v19.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
   `exports["./client"]` + `dsh.client` 解析 —— 与包安装的**唯一**差别是入口由绝对路径给出，
   而不是由 profile 的 `node_modules` 解析。
   选它是为了开发期的迭代速度：改 `lib/client.js` 刷新即生效、改 `prices.json` 即时生效、
@@ -253,8 +318,28 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
 - DSH 的 skill 扫描根：`<项目根>/.dsh/skills`(100) → `<项目根>/.agents/skills`(200) →
   `custom`(300) → `$DSH_HOME/skills`(400) → `~/.agents/skills`(500)
 - **技能目录是会话开始时的快照**，新建/复制进去的技能**当前会话看不到**，需开新会话
-- `project-architect` 等四个技能的附件（`references/` `scripts/` `assets/`）**不存在**，
-  只有 `SKILL.md`；照方法论人工执行，**不要假装跑了校验脚本**
+- ⚠ **更正（2026-10-14 实测）**：此前这里写着"`project-architect` 等技能的附件
+  （`references/` `scripts/` `assets/`）**不存在**，照方法论人工执行、不要假装跑了校验脚本"
+  —— **那条记载已经过时**。四件套的附件**齐全**，`project-architect` 下有 `scripts/`（15 个
+  `.py`）、`references/`（7 个 `.md`）、`assets/`（audit + blueprint 模板）、`tests/`。
+  **审计必须真的跑校验脚本**（它们能抓出人工看不出的问题：ID 撞号、字段缺失、计数不符）：
+  ```bash
+  # 采集证据（--supplement 用于人工校准 FM/FE —— 采集器认不出插件形态，会返回 0 条）
+  python3 ~/.dsh/skills/project-architect/scripts/audit_project.py collect . --mode standard \
+    --supplement /tmp/<校准文件>.json
+  # 产物配对与内容契约校验（报告 + 任务书必须同时间戳）
+  python3 ~/.dsh/skills/project-architect/scripts/audit_project.py validate \
+    docs/05-audits/<报告>.md docs/05-audits/<任务书>.md --evidence <证据.json>
+  # FM/FE 覆盖校验、与基线增量比较
+  python3 ~/.dsh/skills/project-architect/scripts/audit_project.py coverage <证据.json> <报告>
+  python3 ~/.dsh/skills/project-architect/scripts/audit_project.py compare <基线> <当前>
+  ```
+  ⚠ 两条踩过的坑：① **FM/FE 的 ID 必须是 `^(FE|FM)-[A-Z0-9]{6,32}$`**（哈希风格），
+  自定义短 ID（如 `FE-BAL`）会被拒；② 报告里**状态/结论/严重度不要加 `**` 加粗**，
+  校验器按纯文本读表格。仍成立的部分：**技能目录是会话开始时的快照**，
+  新建/复制进去的技能当前会话看不到。
+- ⚠ `assets/audit/` 里有**过期的技能模板副本**（2026-10-08 拷入，比技能目录里的旧）。
+  写审计产物请以 `~/.dsh/skills/project-architect/assets/audit/` 为准，别用项目里这份。
 
 ### 宿主改动到底有没有生效（2026-09-30 踩过两次）
 
@@ -262,11 +347,15 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
   也可能是错觉。**唯一可靠判据**是
   `~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows` 里
   **有没有你新加的投影 key**（或老 key 的 `val` 有没有按你的新代码变化）。
+  ⚠ 该文件的层级是 `{ version, record: { identity, rows } }` —— **`rows` 在 `record` 下面**，
+  不是顶层（2026-10-13 实测更正；按旧文直接读 `d.rows` 会拿到空）。
+  ⚠⚠ **这个文件只能证明"宿主算了什么"，绝不能当"客户端能看到什么"的依据**
+  （见下一条，2026-10-13 为此连错三版）。
 - ⚠ **同一个坑在"更新包"时表现为硬失败（2026-10-09 实测）**：加载器记住的是**boot 那一刻解析出的入口路径**。
   `pnpm update dsh-sym` 把包从 1.5.0 换成 1.6.0 后，`lib/host-v13.js`（boot 时记录的入口）已不存在，
   于是 `set_plugin include:sym-cost true` 直接报 `sym-cost (dsh-sym): failed to import`。
   **不改代码、不重启的解法**：在安装好的包里把旧入口路径补成一个一行再导出
-  （`lib/host-v13.js` → `export * from './host-v18.js'`），再"停用 → 启用"即可；
+  （`lib/host-v13.js` → `export * from './host-v19.js'`），再"停用 → 启用"即可；
   本机 profile 的 `node_modules/dsh-sym` 里现在就有这么一份 shim（**它不属于发布产物**，
   下次 `pnpm install` 会被清掉，清掉后要重启 App 才能重新装配这个 entry）。
   → 结论：**换包 + 不重启 App** 是有条件的；干净做法仍然是重启。
@@ -278,6 +367,100 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
   node scripts/reload-host.mjs --apply     # 换名 + 同步引用（已经脚本化）
   # 然后 plugin_manager: set_plugin false → true
   ```
+
+### 侧栏会话「⋯」菜单可加，且官方导出早就有第二个入口可复用（2026-10-13 取证，CR-0003）
+
+两条先查过的结论，**别再重新投入**：
+
+1. **官方日志导出早就有**，入口在**会话头部**的「更多操作 → 下载 Session 日志」
+   （`@deepseek-ai/dsh-session-log-export`），**不在**侧栏会话列表的「⋯」菜单里 ——
+   所以用户会觉得"没有导出菜单"。想加第二入口**不要自己调 `/api/session.export`**：
+   那个包的浏览器半边把自己 `ctx.provide("sessionLogDownload", controller)` 成了客户端服务，
+   直接 `controller.download(sessionId)` 即可，端点 / HEAD 预检 / 进度弹窗 / 每会话并发折叠
+   全都是它的。
+2. **侧栏会话「⋯」菜单是 `list` 型槽**：`sidebar.workspaces.session.menu.item`，
+   官方标注 `replaceRisk: none`；渲染传 `{ sessionId, displayTitle }`，注入
+   `{ hooks: { menuOpenState, shortcuts } }`。官方四项是 pin(100) / rename(200) /
+   fork(300) / archive(400)，本项目加 900/901。
+   - 菜单行**必须复用官方 `MenuItemButton`**，它自带 `separatorBefore`（官方发丝分隔线），
+     自画 `<button role="menuitem">` 虽然也能被键盘走查收集，但会丢掉官方单元格的形制。
+   - 服务类依赖要写成**条件注册**（`ctx.inject` 里再 `slots.inject`），不要"注册一个永远
+     渲染 null 的空条目" —— 那会在菜单里留一条看不见的空行。
+   - ⚠ `MenuItemButton` **不透传未知 props**（只解构 7 个已知项），所以给它传
+     `data-sym-*` 是无效的死代码，别指望能在 DOM 上定位到。
+
+**再看这条之前先读下面「DSH 桌面版没有任何刷新手段」**：客户端改动没有 watcher 就不生效。
+
+### 「prefill 速度」算不出来，别再试（2026-10-13 做过又撤除，附实测证据）
+
+**结论：现有任何官方投影都推不出 prefill 速度；`TTFT` 不能当分母。** 这条读数曾实现过
+（commit 未落地，代码已全部撤除），因为**分母测的不是处理时间，而是服务端排队时间**。
+
+实测证据（会话 `bf343e09`，210 步，逐事件取 `step/start` 与 `assistant/message` 里
+`stream[].time0` 相减）：
+
+| 量 | 值 |
+|---|---|
+| TTFT 中位 | **3.5 s** |
+| TTFT 平均 | 11.8 s（被长尾拉高） |
+| TTFT 最大 | **174 s** |
+| 未缓存 token vs TTFT 的线性拟合斜率 | **负值**（≈ −0.00005 s/token） |
+
+按 TTFT 分档看**未缓存 token 的中位数**：`<2s` → 548、`2–5s` → 656、`5–20s` → 708、
+`>20s` → 800 —— **四档几乎一样**。即 `token=674` 可能耗 174 s，`token=130266` 只耗 3.7 s。
+`TTFT` 与要处理的 token 数**无关**，它测的是"服务端什么时候开始回"。
+
+反例（唯一能看到真实 prefill 的形态）：某步 `未缓存 130266 / 缓存 0 / 3.7 s` = **35,408 tok/s**
+—— 但那种"大 prompt 且完全未命中缓存"的步是少数，无法通用。
+
+**曾经踩的口径坑（都错，别重犯）**：
+- 含缓存命中做分子 → 中位 17,854 tok/s（缓存命中是 KV 复用、不做计算，虚高一个数量级）；
+- 仅未缓存 + 累计 TTFT → 中位 1,381 tok/s（短会话合理，长会话掉到 275）；
+- 截尾/<20s 阈值 → 595~751，**阈值一动结果就变，说明不是稳定量**。
+
+**客户端拿不到的东西**（所以"截尾"在客户端做不到）：`sessionStats` 的 wire view 只有 8 个
+**累计**字段，没有逐步数据；运行中的 step 只有 `openStep.startTime`（且 `openStep` 本身
+也不在客户端 view 里），结算前没有任何 token 数。
+
+→ 要真做，**只能在宿主**：宿主逐步记录，且只统计"未缓存占比高"的步（真正的 prefill 请求）。
+那需要新增一个投影单元并重启验证；当前选择是**不做**。
+
+### 投影的「宿主 state」≠「客户端 view」（2026-10-13 连错三版，务必先读）
+
+**`session_projcache` 里存的是宿主 state；客户端只拿到该单元的 `wire.view` 结果。两者常常不同形。**
+
+- 实例：`tokenUsage` 的 state 是 `{ totals, last: { turn, step, buckets } }`，但
+  `wire.view: (state) => state.totals` —— **客户端拿到的是扁平的累计桶，根本没有 `last`**。
+  照 state 形状写客户端代码（`usage.last.buckets.xxx`）→ 客户端恒读到 `undefined` → 组件
+  永远返回 `null` → **界面上什么都不显示，且没有任何报错**。
+- **查客户端可见字段的唯一可靠位置**是 asar 里该单元定义中的 `wire: { viewSchema, view }`；
+  落盘缓存、宿主 `stateOf()` 都**不能**作为依据。
+- 同理，`sessionStats` 的 view 是显式列出的 8 个字段（`turns/steps/llmMs/toolMs/ttftMs/
+  ttftSteps/decodeMs/decodeTokens`）—— 它在客户端**没有** `openStep` / `pendingCalls` /
+  `lastTurn`，别拿它们做 UI。
+
+**槽组件里"安静退场"会让故障不可见。** 没有 DevTools（见下条）时，一个恒返回 `null` 的
+槽组件与"槽没注册上"在界面上一模一样，只能靠猜。诊断办法：**临时**让组件把原因画在界面上
+（`data-sym-xxx-diag` + 可见文本），定位到之后**必须撤掉**、恢复"数据不可得返回 `null`"的约定。
+这条在 2026-10-13 一次就定位到了连错三版的根因，比反复读 asar 快得多。
+
+**DSH 桌面版没有任何刷新手段（2026-10-13 查 asar 菜单定义证实）**：`toggleDevTools` 两项都是
+`visible: false`，唯一快捷键 **F12 只在 win32 分支注册**；darwin 分支只挂标准应用菜单，
+**没有 reload 项**。→ 别让用户"按 Cmd+R / F5"（不会有反应）。客户端改动生效只有两条路：
+① **完全退出 App 再打开**（菜单里的关闭只是隐藏到托盘，要 Cmd+Q）；② 跑
+`pnpm run dev:web`（bundle watcher 会把重建后的模块推给浏览器）。
+**没有 watcher 时改了 `lib/client.js`，浏览器永远不会知道。**
+
+**改了工作副本的客户端代码，还要同步进 profile 的包副本**（当前 profile 是
+`sym-cost` 禁用 + `sym-dev` 指向工作副本，`file://` 只接管**宿主**；客户端半边仍按包名
+`dsh-sym` 解析到 `node_modules/dsh-sym/lib/client.js`）：
+
+```
+cp ~/GitHub/DSH-Sym/lib/client.js ~/.dsh/profiles/desktop/node_modules/dsh-sym/lib/client.js
+```
+
+（revision 由文件的 mtime/ctime/size 推导，cp 后自然会推进。）**该副本会被 `pnpm install`
+清掉**，不是发布产物。
 
 ### 投影单元的一个坑（同一天踩到）
 

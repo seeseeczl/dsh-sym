@@ -92,7 +92,7 @@ GET /api/sym.git?sessionId=<SessionId>        （GIT_STATUS_ROUTE = "/api/sym.gi
 
 - `loc.hardCeiling.M-CLIENT`：3000 → **3300**（本次落地后实际约 3090 行，留 200 余行余量）。
 - 同时把 `loc.byModule` 与注释里的过期基线（写死 client 1349）更新为本次实测值，避免下次再按旧基线推算。
-- 宿主 `lib/host-v18.js` 本次 +约 200 行（1062 → 约 1260），仍在 1800 以内，不动。
+- 宿主 `lib/host-v19.js` 本次 +约 200 行（1062 → 约 1260），仍在 1800 以内，不动。
 
 ## 7. 取舍与被否方案
 

@@ -4,7 +4,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createGitStatusReader } from '../lib/host-v18.js'
+import { createGitStatusReader } from '../lib/host-v19.js'
 
 /**
  * Git 读数的**真机端到端**回归（CR-0002 评审整改 A4）。

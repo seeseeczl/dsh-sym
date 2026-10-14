@@ -14,7 +14,7 @@ evidence: []
 
 | # | 任务 | 落点 | 完成判据 |
 | --- | --- | --- | --- |
-| T-01 | `parseBranches(stdout)`：`for-each-ref` 两列 → `[{name,current}]`，当前分支排首位 | `lib/host-v18.js` | 单测覆盖 `main\t*` / `feat/x\t` / 空输入 |
+| T-01 | `parseBranches(stdout)`：`for-each-ref` 两列 → `[{name,current}]`，当前分支排首位 | `lib/host-v19.js` | 单测覆盖 `main\t*` / `feat/x\t` / 空输入 |
 | T-02 | GET 载荷新增 `branches` | 同上 | 真机 GET 里能看到本地分支清单 |
 | T-03 | `switchBranch(cwd, branch, signal)`：白名单 → 名称校验 → `git switch -- <branch>` → 失败回 stderr 首行 → 成功失效读缓存 | 同上 | 单测三条路径（未知分支 / git 拒绝 / 成功）+ 真机 POST |
 | T-04 | 路由接受 `POST`，body `{sessionId, branch}`，400/404/409 分流 | 同上 | 真机：同名 no-op 200、未知分支 400 |
@@ -40,7 +40,7 @@ evidence: []
 | 模块 | 改动前 | 改动后 | 上限 | 本次净增 |
 | --- | --- | --- | --- | --- |
 | `lib/client.js`（M-CLIENT） | 3121 | **3225** | 3300 | +104（卡内） |
-| `lib/host-v15.js` → `lib/host-v18.js`（M-HOST） | 1354 | **1470** | 1800 | +116（卡内） |
+| `lib/host-v15.js` → `lib/host-v19.js`（M-HOST） | 1354 | **1470** | 1800 | +116（卡内） |
 
 ⚠️ **M-CLIENT 只剩 75 行余量**：下一个客户端功能要么先就地压缩，要么再走一次 CR 调阈值。
 

@@ -16,10 +16,10 @@ evidence: []
 
 | # | 任务 | 落点 | 完成判据 |
 | --- | --- | --- | --- |
-| T-01 | 契约常量 `GIT_STATUS_ROUTE` 两端各一份 + 守卫 | `lib/host-v18.js`、`lib/client.js`、`test/contracts.test.mjs` | `npm test` 断言两端相等 |
-| T-02 | 纯解析：`parseGitStatus` / `parseNumstatTotals`（`compareUrlFor` 已于 2026-10-09 随建 PR 入口一并删除） | `lib/host-v18.js` | 单测覆盖 porcelain v2 的 1/2/u/? 行、二进制 `-`、detached、无上游 |
-| T-03 | git 读取器（resolveExecutable + 工作目录状态 + 1.5s 缓存合流） | `lib/host-v18.js` | 无 git 时返回 null 且只记一次降级 |
-| T-04 | 认证路由 `/api/sym.git`（条件注入 connection/sessions/subprocess） | `lib/host-v18.js` | 会话不存在 / 无 cwd 时 404；存在时 200 且 `cache-control: no-store` |
+| T-01 | 契约常量 `GIT_STATUS_ROUTE` 两端各一份 + 守卫 | `lib/host-v19.js`、`lib/client.js`、`test/contracts.test.mjs` | `npm test` 断言两端相等 |
+| T-02 | 纯解析：`parseGitStatus` / `parseNumstatTotals`（`compareUrlFor` 已于 2026-10-09 随建 PR 入口一并删除） | `lib/host-v19.js` | 单测覆盖 porcelain v2 的 1/2/u/? 行、二进制 `-`、detached、无上游 |
+| T-03 | git 读取器（resolveExecutable + 工作目录状态 + 1.5s 缓存合流） | `lib/host-v19.js` | 无 git 时返回 null 且只记一次降级 |
+| T-04 | 认证路由 `/api/sym.git`（条件注入 connection/sessions/subprocess） | `lib/host-v19.js` | 会话不存在 / 无 cwd 时 404；存在时 200 且 `cache-control: no-store` |
 | T-05 | 客户端胶囊 `GitStatusCell` + CSS + 槽注册（`utilities`, order -20，实机反馈后由 20 调整） | `lib/client.js` | 真机头部出现胶囊；非 git 目录不渲染 |
 | T-06 | 阈值与治理文档同步 | `.project-architect.json`、`AGENTS.md`、`docs/01-architecture/project-architecture-and-requirements.md` | M-CLIENT 上限 3300 且 FR-11 入表 |
 
@@ -47,7 +47,7 @@ evidence: []
 | 模块 | 改动前 | 改动后 | 上限 | 本次净增 |
 | --- | --- | --- | --- | --- |
 | `lib/client.js`（M-CLIENT） | 2973 | **3121**（撤建 PR 后） | 3300（本 CR 调高） | +148 |
-| `lib/host-v13.js` → `lib/host-v18.js`（M-HOST） | 1062 | **1411** | 1800 | +349 |
+| `lib/host-v13.js` → `lib/host-v19.js`（M-HOST） | 1062 | **1411** | 1800 | +349 |
 
 单卡 ≤300 行：T-01+T-02（常量与纯解析）≈ +215，T-03+T-04（读取器与路由）≈ +134，T-05（客户端）≈ +157、T-06（文档）不记入生产行 —— 均在卡内。
 
@@ -112,7 +112,7 @@ evidence: []
 ```yaml
 - insert:
     - id: sym-dev
-      name: "file:///Users/long/GitHub/DSH-Sym/lib/host-v18.js"
+      name: "file:///Users/long/GitHub/DSH-Sym/lib/host-v19.js"
 ```
 
 ```text

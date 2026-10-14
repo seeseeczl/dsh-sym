@@ -7,7 +7,8 @@ import {
   QUICK_ACTIONS_KEY, DEFAULT_QUICK_ACTIONS, normalizeQuickActions,
   createQuickActionsProjection, buttonsFromConfig, Config,
   GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute,
-} from '../lib/host-v18.js'
+  CONTEXT_LOSS_KEY, contextLossProjection,
+} from '../lib/host-v19.js'
 
 /** Beijing wall-clock on 2026-09-30 (a Wednesday) as epoch ms. */
 const bj = (y, m, d, hh, mm = 0) => Date.UTC(y, m - 1, d, hh - 8, mm)
@@ -274,7 +275,7 @@ const PORCELAIN = [
   '# branch.upstream origin/main',
   '# branch.ab +2 -3',
   '1 .M N... 100644 100644 100644 3b2c1d 3b2c1d lib/client.js',
-  '1 M. N... 100644 100644 100644 aa bb lib/host-v18.js',
+  '1 M. N... 100644 100644 100644 aa bb lib/host-v19.js',
   '2 R. N... 100644 100644 100644 aa bb R100 new.js\told.js',
   'u UU N... 100644 100644 100644 100644 aa bb cc conflicted.js',
   '? scratch.txt',
@@ -324,7 +325,7 @@ test('git 状态：numstat 汇总跳过二进制的一侧', () => {
 test('git 状态：宿主不再产出 remote / compare（用户不做 PR 流程）', async () => {
   // 读取器只放行 status/numstat/rev-parse 三类命令；remote 那一步连同它的建 PR 链接
   // 一起被删除，所以这里断言「没有 compare 这个字段」在源码层面也成立。
-  const source = readFileSync(new URL('../lib/host-v18.js', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../lib/host-v19.js', import.meta.url), 'utf8')
   assert.ok(!source.includes('compareUrlFor'), '建 PR 链接的拼接函数应已删除')
   assert.ok(!source.includes("'remote', 'get-url'"), '不应再跑 git remote get-url')
   assert.ok(!source.includes('compare:'), '载荷里不应再有 compare 字段')
@@ -587,4 +588,71 @@ test('C4：超大 body 直接 413，不进解析', async () => {
   assert.equal(response.status, 413)
 })
 
+//#endregion
+
+//#region 上下文损耗投影（compaction 折叠）
+// 用户诉求：压缩次数是"信息丢失程度"的指标。客户端拿不到 compaction 事件，
+// 所以由宿主折叠成 { compactions, prunes, lostTokens }。
+
+/** 折叠一串事件，返回 wire view。 */
+const foldLoss = (events) => {
+  let state = contextLossProjection.init()
+  for (const event of events) state = contextLossProjection.apply(state, event)
+  return contextLossProjection.wire.view(state)
+}
+
+test('contextLoss：compact 与 prune 都计入次数，token 累加', () => {
+  const view = foldLoss([
+    { type: 'compaction/start', data: { compactionId: 'c1', turn: 3 } },
+    { type: 'compaction/summary', data: { compactionId: 'c1', turn: 3, shadowedTokenCount: 120000 } },
+    { type: 'compaction/end', data: { compactionId: 'c1', turn: 3 } },
+    { type: 'compaction/prune', data: { shadowedTokenCount: 8000 } },
+    { type: 'compaction/start', data: { compactionId: 'c2', turn: 7 } },
+    { type: 'compaction/summary', data: { compactionId: 'c2', turn: 7, shadowedTokenCount: 45000 } },
+    { type: 'compaction/end', data: { compactionId: 'c2', turn: 7 } },
+  ])
+  assert.equal(view.compactions, 2, '两次 compact')
+  assert.equal(view.prunes, 1, '一次 prune')
+  assert.equal(view.lostTokens, 173000, '120000 + 8000 + 45000')
+  assert.equal(view.lastTurn, 7)
+})
+
+test('contextLoss：只有 summary/prune 计数，start 不算一次压缩', () => {
+  // 失败的压缩会有 start 但没有 summary —— 不能被算成"压缩过一次"。
+  const view = foldLoss([
+    { type: 'compaction/start', data: { compactionId: 'c1', turn: 2 } },
+    { type: 'compaction/end', data: { compactionId: 'c1', turn: 2, error: 'boom' } },
+  ])
+  assert.equal(view.compactions, 0, 'start+error 不算压缩成功')
+  assert.equal(view.lostTokens, 0)
+})
+
+test('contextLoss：缺 shadowedTokenCount 或非数值时按 0 计，不编数', () => {
+  const view = foldLoss([
+    { type: 'compaction/summary', data: { compactionId: 'c1', turn: 1 } },
+    { type: 'compaction/prune', data: { shadowedTokenCount: 'nope' } },
+    { type: 'compaction/prune', data: { shadowedTokenCount: -5 } },
+    { type: 'compaction/summary', data: { compactionId: 'c2', turn: 1, shadowedTokenCount: 100 } },
+  ])
+  assert.equal(view.compactions, 2)
+  assert.equal(view.prunes, 2)
+  assert.equal(view.lostTokens, 100, '只有合法值才计入')
+})
+
+test('contextLoss：无关事件保持 state 引用不变（不白算视图）', () => {
+  const state = contextLossProjection.init()
+  for (const type of ['assistant/message', 'tool/result', 'turn/start', 'request/header']) {
+    assert.equal(contextLossProjection.apply(state, { type, data: {} }), state, type + ' 不该改 state')
+  }
+})
+
+test('contextLoss：首次压缩后 state 引用必须变（投影可见性的硬要求）', () => {
+  const state = contextLossProjection.init()
+  const next = contextLossProjection.apply(state, { type: 'compaction/summary', data: { turn: 1, shadowedTokenCount: 1 } })
+  assert.notEqual(next, state, 'state 引用不变则客户端永远读不到这个 key')
+})
+
+test('contextLoss：契约常量与客户端一致', () => {
+  assert.equal(CONTEXT_LOSS_KEY, 'contextLoss')
+})
 //#endregion

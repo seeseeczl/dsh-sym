@@ -1,17 +1,26 @@
 {
   "$comment": "dsh-sym 治理事实源。LOC、模块路径、公开契约、忽略项只在这里维护；文档与审计脚本一律引用本文件，不得另立阈值。本技能未提供模板（见 docs/01-architecture 附录 B），结构按 SKILL.md 的语义设计。",
   "version": 1,
-  "profiles": ["core", "ui", "service"],
+  "profiles": [
+    "core",
+    "ui",
+    "service"
+  ],
   "projectRoot": ".",
   "establishedAt": "2026-09-30",
-
   "modules": [
     {
       "id": "M-HOST",
-      "path": "lib/host-v18.js",
+      "path": "lib/host-v19.js",
       "kind": "host",
-      "role": "投影折叠、三级价目来源、引用展开、进程内存读数、Git 读数路由（读 + 只切分支）",
-      "publicContract": ["sessionCost projection (stateVersion 3)", "readProcessMemory()", "GET|POST /api/sym.git (CR-0001 + CR-0002)", "parseGitStatus / parseBranches / parseNumstatTotals / createGitStatusReader / gitStatusRoute"],
+      "role": "投影折叠（计费 + 上下文损耗）、三级价目来源、引用展开、进程内存读数、Git 读数路由（读 + 只切分支）",
+      "publicContract": [
+        "sessionCost projection (stateVersion 3)",
+        "contextLoss projection (stateVersion 1, CR-0004)",
+        "readProcessMemory()",
+        "GET|POST /api/sym.git (CR-0001 + CR-0002)",
+        "parseGitStatus / parseBranches / parseNumstatTotals / createGitStatusReader / gitStatusRoute"
+      ],
       "changeCost": "high",
       "changeProcedure": "停用插件 → 换新文件名 → 同步全部引用 → 启用。换名与同步引用走 scripts/reload-host.mjs（默认 dry-run，--apply 才写盘；历史审计产物不改写）；停用/启用与重启必须人工完成。直接改内容或只改文件名都会因宿主模块缓存而不生效。"
     },
@@ -19,7 +28,7 @@
       "id": "M-CLIENT",
       "path": "lib/client.js",
       "kind": "client",
-      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单、会话头部 Git 胶囊（读数 + 分支切换菜单）",
+      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单、会话头部 Git 胶囊（读数 + 分支切换菜单）、侧栏会话菜单（复制会话 ID / 导出会话日志）",
       "publicContract": [
         "data-sym-cost-part",
         "data-sym-turn-cost",
@@ -34,7 +43,10 @@
         "data-sym-move-nudge",
         "data-git-status",
         "data-git-branches",
-        "data-git-picker"
+        "data-git-picker",
+        "slot sidebar.workspaces.session.menu.item#sym-copy-session-id (order 900)",
+        "slot sidebar.workspaces.session.menu.item#sym-export-session (order 901, 条件注册：依赖官方客户端服务 sessionLogDownload)",
+        "data-sym-context-loss"
       ],
       "changeCost": "low",
       "changeProcedure": "保存即热更新，无需重启。"
@@ -44,7 +56,11 @@
       "path": "lib/prices.json",
       "kind": "data",
       "role": "价目覆盖 / 汇率 / 法定节假日",
-      "publicContract": ["usdToCny:number", "holidays:string[] (YYYY-MM-DD)", "models:Record<string,{input,output,cacheRead,cacheWrite}>"],
+      "publicContract": [
+        "usdToCny:number",
+        "holidays:string[] (YYYY-MM-DD)",
+        "models:Record<string,{input,output,cacheRead,cacheWrite}>"
+      ],
       "changeCost": "low",
       "changeProcedure": "按 mtime 即时生效。字段是对用户可见的契约，破坏性变更须走 CR。"
     },
@@ -53,12 +69,13 @@
       "path": "cordis.patch.yml",
       "kind": "config",
       "role": "组合包补丁，使 profile 一次性装好",
-      "publicContract": ["insert entry id=sym-cost"],
+      "publicContract": [
+        "insert entry id=sym-cost"
+      ],
       "changeCost": "medium",
       "changeProcedure": "改动会触发宿主重载。"
     }
   ],
-
   "archivedModules": [
     {
       "id": "M-MOVE",
@@ -68,32 +85,43 @@
       "reason": "P0-03 处置：FR-10 会话跨工作区移动无任何调用方，且客户端→宿主通道由 dsh-api-remotes 在构建期固定，当前架构下不可接通（ADR-003）。原始 86 行实现完整保留在设计记录里且未改动，日后 DSH 开放通道时可直接接回。由此不再计入生产代码。"
     }
   ],
-
   "loc": {
     "$comment": "净新增阈值为任务卡约束：单卡至多 5 个生产文件、净新增至多 300 行。此处记录当前基线，用于判断增长是否异常。",
-    "baselineAt": "2026-10-09",
+    "baselineAt": "2026-10-13",
     "byModule": {
       "M-HOST": 1546,
-      "M-CLIENT": 3310
+      "M-CLIENT": 3649
     },
-    "productionTotal": 4856,
+    "productionTotal": 5195,
     "taskLimits": {
       "maxProductionFilesPerTask": 5,
       "maxNetAddedProductionLinesPerTask": 300
     },
     "hardCeiling": {
-      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。客户端半边不能拆文件（file:// 挂载没有 bundle URL，require.async 解析不了 chunk），M-CLIENT 的余量只能靠就地压缩或由 CR 调整阈值维持：CR-0001 把 3000 提到 3300，CR-0002 评审整改实到 3274（仅剩 26 行），故再提到 3400。下次客户端功能若再逼近，必须先就地压缩。",
+      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。客户端半边不能拆文件（file:// 挂载没有 bundle URL，require.async 解析不了 chunk），M-CLIENT 的余量只能靠就地压缩或由 CR 调整阈值维持：CR-0001 把 3000 提到 3300，CR-0002 评审整改实到 3274（仅剩 26 行），故再提到 3400；CR-0003 实到 3649（改动前 3310 只剩 90 行余量，已三轮就地压缩 383→339 仍触顶），故提到 3700。⚠ 本次之后只剩 51 行余量 —— 下一个客户端功能必须先就地压缩；若压缩不足，评估把客户端半边改成走 HTTP bundle 服务的包安装形态以支持拆文件。",
       "M-HOST": 1800,
-      "M-CLIENT": 3400
+      "M-CLIENT": 3700
     }
   },
-
   "contracts": {
     "$comment": "对用户或其他组件可见、变更即为破坏性的接口。",
     "projection": {
       "key": "sessionCost",
       "stateVersion": 3,
-      "fields": ["cny", "requests", "peakRequests", "tokens", "cost", "models", "unpriced", "turns", "usdToCny", "peakNow", "catalogSize", "memory"],
+      "fields": [
+        "cny",
+        "requests",
+        "peakRequests",
+        "tokens",
+        "cost",
+        "models",
+        "unpriced",
+        "turns",
+        "usdToCny",
+        "peakNow",
+        "catalogSize",
+        "memory"
+      ],
       "rule": "只存 token 数与计数，不存金额、单价、汇率。stateVersion 变更时注册表会拒绝旧 checkpoint 并重建。"
     },
     "quoteMark": {
@@ -102,7 +130,14 @@
     },
     "crossEndConstants": {
       "$comment": "两端不能共享模块（客户端为浏览器 module factory，宿主为 Node 模块），故各持一份拷贝。",
-      "constants": ["PROJECTION_KEY", "QUOTE_MARK_PREFIX", "QUOTE_MARK_ID_LENGTH", "QUICK_ACTIONS_KEY", "GIT_STATUS_ROUTE"],
+      "constants": [
+        "PROJECTION_KEY",
+        "QUOTE_MARK_PREFIX",
+        "QUOTE_MARK_ID_LENGTH",
+        "QUICK_ACTIONS_KEY",
+        "GIT_STATUS_ROUTE",
+        "CONTEXT_LOSS_KEY"
+      ],
       "guard": "test/contracts.test.mjs 断言两端常量相等，并用「客户端生成标记 → 宿主展开」做端到端验证。改动任一端必须跑 npm test。"
     },
     "tierPricing": {
@@ -112,14 +147,46 @@
       "$comment": "CR-0001。本插件第一条非投影的宿主↔客户端契约；官方同类通道见 dsh-client-ui-deliverables 的 /api/changes.summary。",
       "route": "GET /api/sym.git?sessionId=<SessionId> | POST /api/sym.git { sessionId, branch }（sessionId 也可放查询串）",
       "constant": "GIT_STATUS_ROUTE（两端各一份，test/contracts.test.mjs 守卫）",
-      "fields": ["root", "branches[]:{name,current}", "branch", "detached", "head", "upstream", "ahead", "behind", "files", "added", "deleted", "untracked"],
+      "fields": [
+        "root",
+        "branches[]:{name,current}",
+        "branch",
+        "detached",
+        "head",
+        "upstream",
+        "ahead",
+        "behind",
+        "files",
+        "added",
+        "deleted",
+        "untracked"
+      ],
       "rule": "读 + **只切分支**（CR-0002）：GET 读数（200/400/404），POST 先与本地分支白名单比对再用 argv 执行 `git switch -- <branch>`（无 switch 的老 git 回退 `git checkout <branch>`），状态码 200 / 400 / 404 / 409（git 拒绝）/ 413（body 过大）；**写操作不复用请求 signal**（浏览器断连不得打断切换）；每次 GET 现读 git：status + diff 并行，toplevel 按目录只读一次、分支清单 4s 内复用，故稳态每轮 2 条命令（~40ms）；读缓存按 cwd 0.7s 合流多实例，切换后失效并让在飞的那次读失效。客户端 2s 轮询 + 失败快速重试 + 轮次结束立刻重读。不 add/commit/push、不用 -f/--discard-changes/stash/reset、不取 remote、不调托管平台 API、不碰凭据、不做 PR 链接。破坏性变更需 CR。"
+    },
+    "contextLossProjection": {
+      "$comment": "CR-0004。上下文压缩统计：客户端拿不到 compaction/* 与 compaction/prune 事件（无现成投影暴露），故由宿主折叠。",
+      "key": "contextLoss",
+      "stateVersion": 1,
+      "fields": [
+        "compactions",
+        "prunes",
+        "lostTokens",
+        "lastTurn"
+      ],
+      "rule": "只存计数与 token 数，**不存摘要文本**（摘要可能很大且属会话内容）。compactions 只由 compaction/summary 计数、prunes 只由 compaction/prune 计数 —— start/end 不计数，否则失败或取消的压缩会被算成成功。shadowedTokenCount 非法或缺失按 0 计，不编数。",
+      "consumer": "conversation.composer.dock 的 sym-context-loss 格（order 30，落在内存之后、官方 ContextMeter 之前）"
     }
   },
-
   "ignore": {
     "$comment": "不计入生产代码统计与审计范围。",
-    "paths": ["docs/**", "assets/**", "*.md", "package-lock.json", "node_modules/**", ".git/**"],
+    "paths": [
+      "docs/**",
+      "assets/**",
+      "*.md",
+      "package-lock.json",
+      "node_modules/**",
+      ".git/**"
+    ],
     "knownGaps": [
       {
         "id": "GAP-REG",

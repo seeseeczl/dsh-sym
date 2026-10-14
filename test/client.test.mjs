@@ -280,7 +280,7 @@ test('导入：接受 { buttons } 与裸数组，坏文件返回 null', () => {
   assert.equal(parseQuickActionsFile('{"buttons":"nope"}'), null)
 })
 
-test('显示项：三个开关默认全开，读写往返正确，坏值回落全开', () => {
+test('显示项：四个开关默认全开，读写往返正确，坏值回落全开', () => {
   const { readDisplayOptions, writeDisplayOptions } = loadClient()
   const saved = globalThis.localStorage
   const store = new Map()
@@ -289,15 +289,16 @@ test('显示项：三个开关默认全开，读写往返正确，坏值回落�
     setItem: (k, v) => { store.set(k, String(v)) },
     removeItem: (k) => { store.delete(k) },
   }
+  const allOn = { balance: true, cost: true, memory: true, contextLoss: true }
   try {
-    assert.deepEqual(readDisplayOptions(), { balance: true, cost: true, memory: true })
-    writeDisplayOptions({ balance: false, cost: true, memory: false })
-    assert.deepEqual(readDisplayOptions(), { balance: false, cost: true, memory: false })
+    assert.deepEqual(readDisplayOptions(), allOn)
+    writeDisplayOptions({ balance: false, cost: true, memory: false, contextLoss: false })
+    assert.deepEqual(readDisplayOptions(), { balance: false, cost: true, memory: false, contextLoss: false })
     // 只关心显式 false：别的值都当"开"
     store.set('dsh-sym.display-options', '{"balance":"nope"}')
-    assert.deepEqual(readDisplayOptions(), { balance: true, cost: true, memory: true })
+    assert.deepEqual(readDisplayOptions(), allOn)
     store.set('dsh-sym.display-options', '{ 坏的 json')
-    assert.deepEqual(readDisplayOptions(), { balance: true, cost: true, memory: true })
+    assert.deepEqual(readDisplayOptions(), allOn)
   } finally {
     if (saved === undefined) delete globalThis.localStorage
     else globalThis.localStorage = saved
@@ -582,10 +583,246 @@ test('词典：zh / en 键集齐平，且代码里用到的键两边都有（C2�
   const en = Object.keys(client.en).sort()
   assert.deepEqual(zh, en, '两份词典的键集必须完全一致')
   const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  const used = new Set([...source.matchAll(/tr\(t,\s*"([^"]+)"/g)].map((match) => match[1]))
+  // 座位变量名可能是 `t`（槽直接给）或 `props.t`（我们把槽 props 透传一层），两种都要抓到。
+  const used = new Set([...source.matchAll(/tr\((?:\w+\.)?t,\s*"([^"]+)"/g)].map((match) => match[1]))
   assert.ok(used.size >= 20, '至少抓到一批真实用到的键：' + used.size)
   for (const key of used) {
     assert.ok(Object.hasOwn(client.zh, key), 'zh 词典缺 ' + key)
     assert.ok(Object.hasOwn(client.en, key), 'en 词典缺 ' + key)
   }
 })
+
+test('图标大小校正（ICON_FIT）：覆盖全、系数在夹取区间、笔宽不被缩放带跑（C5）', () => {
+  const client = loadClient()
+  const names = Object.keys(client.QUICK_ICONS)
+  assert.equal(names.length, 105, '图标集合仍是 105 枚')
+  const stroke = client.QUICK_ICON_STROKE
+  let grew = 0
+  let shrank = 0
+  for (const name of names) {
+    const fit = client.iconFit(name)
+    assert.ok(fit !== null, name + ' 缺少校正条目')
+    const [k, dx, dy] = fit
+    // 夹取区间 = 生成器的 [0.7, 2.0]（第二次校正时放宽，现在不对任何一枚生效，只当保险）
+    assert.ok(k >= 0.7 && k <= 2.0, name + ' 的缩放系数 ' + k + ' 超出夹取区间')
+    assert.ok(Number.isFinite(dx) && Number.isFinite(dy), name + ' 的平移量不是有限数')
+    // 笔宽守恒：渲染时描边写成 stroke/k，再被组内 scale(k) 乘回去 —— 屏幕上必须仍是 stroke
+    assert.ok(Math.abs((stroke / k) * k - stroke) < 1e-9, name + ' 的笔宽补偿不成立')
+    if (k > 1.02) grew += 1
+    if (k < 0.98) shrank += 1
+  }
+  // 校正的**结果**才是该守的东西，而且断言要**与 ZOOM 无关** —— 否则每次调整体缩放都要改测试。
+  // 抽查 6 枚覆盖原始墨迹的整个跨度（7.4 ~ 15.8 格），校正后它们必须收敛成一小簇。
+  // ⚠ 原始值来自 scripts/fit-icons.mjs 的实测；改了图标图形数据要同步（生成器会重算系数）。
+  const raw = { dot: 7.4, square: 9.0, ring: 11.8, search: 11.9, file: 13.77, infinity: 15.8 }
+  const fitted = Object.entries(raw).map(([name, size]) => [name, size * client.iconFit(name)[0]])
+  const lo = Math.min(...fitted.map(([, v]) => v))
+  const hi = Math.max(...fitted.map(([, v]) => v))
+  assert.ok(hi / lo < 1.05, '校正后最大/最小应小于 5%（实测 ' + (hi / lo).toFixed(3) + '）')
+  assert.ok(hi < 15, '校正后最大墨迹应留出边距、不贴 viewBox 边缘（实测 ' + hi.toFixed(2) + ' / 框 16）')
+  assert.ok(lo > 10, '校正后最小墨迹不该小到看不出（实测 ' + lo.toFixed(2) + '）')
+  // 圆形为主的那 8 枚带 +2% 光学补偿，所以应落在这一簇的**上沿**
+  const ringAfter = 11.8 * client.iconFit('ring')[0]
+  const squareAfter = 9.0 * client.iconFit('square')[0]
+  assert.ok(ringAfter >= squareAfter, '圆形补偿后不应小于同尺寸方形：ring ' + ringAfter.toFixed(2) + ' vs square ' + squareAfter.toFixed(2))
+  assert.ok(client.iconFit('infinity')[0] < 1, 'infinity（原始 15.8 格）应被收小')
+  assert.ok(client.iconFit('dot')[0] > 1.5, 'dot（原始 7.4 格）应被放大')
+})
+
+//#endregion
+
+test('渲染冒烟：上下文压缩格子能渲染，缺投影时安静退场', () => {
+  // 与竖条同源：这个组件读宿主的 contextLoss 投影，形状变了可能在渲染期抛错，
+  // 而槽里抛错的表现是"整格不见了、没有报错浮出来"。让它真的被调用一次。
+  const client = loadClient()
+  const t = (key) => key
+  // 压缩过：显示次数与丢失量
+  const el = client.ContextLossPill({
+    t,
+    useProjection: () => ({ compactions: 2, prunes: 1, lostTokens: 173000, lastTurn: 7 }),
+  })
+  assert.ok(el !== null && typeof el === 'object', '有数据时要渲染出元素')
+  assert.equal(el.props['data-sym-context-loss'], '3', '次数 = compact 2 + prune 1')
+  assert.equal(el.props['data-sym-context-lost-tokens'], '173000')
+  // 还没压过：仍然渲染（0 是真实读数，不是缺数据）
+  const fresh = client.ContextLossPill({
+    t,
+    useProjection: () => ({ compactions: 0, prunes: 0, lostTokens: 0, lastTurn: null }),
+  })
+  assert.ok(fresh !== null && typeof fresh === 'object', '未压缩时要显示"尚未压缩"，不能整格消失')
+  assert.equal(fresh.props['data-sym-context-loss'], '0')
+  // 投影缺失才退场
+  assert.equal(client.ContextLossPill({ t, useProjection: () => null }), null)
+  assert.equal(client.ContextLossPill({ t, useProjection: () => undefined }), null)
+})
+
+test('渲染冒烟：CostPill 能被调用，且缺投影时安静退场', () => {
+  // 与竖条同源的补课：槽组件在渲染期抛错时，React 会把整块卸载，界面表现是
+  // "什么都没出现、也没有报错浮出来" —— 只能靠真的调用一次来兜住。
+  const client = loadClient()
+  const t = (key) => key
+  // 没有投影：整格不渲染（NFR-02），但不能抛错
+  assert.equal(client.CostPill({ t, useProjection: () => null }), null)
+  // 有投影但还没结算（requests = 0）：应仍能渲染出元素（内存读数与结算无关）
+  const pending = {
+    cny: 0, requests: 0, peakRequests: 0, tokens: {}, cost: {}, models: [], unpriced: [],
+    turns: [], usdToCny: 7.2, peakNow: false, catalogSize: 0, memory: { rss: 1024 * 1024, heapUsed: 1024 },
+  }
+  const el = client.CostPill({ t, useProjection: () => pending })
+  assert.ok(el !== null && typeof el === 'object', '内存读数必须仍在（不能跟着花费一起消失）')
+})
+
+test('渲染冒烟：createBalanceCell 是个工厂，能在没有 remote 时降级', () => {
+  // 余额格需要 `remote` 命名空间；拿不到时必须降级而不是让整格抛错。
+  const client = loadClient()
+  assert.equal(typeof client.createBalanceCell, 'function')
+  const fakeCtx = {
+    locale: { getSnapshot: () => ({ active: 'zh-CN' }) },
+    get: () => { throw new Error('cannot get property "remote" without inject') },
+  }
+  let cell = null
+  try {
+    cell = client.createBalanceCell(fakeCtx)
+  } catch (error) {
+    assert.fail('工厂本身不该抛错，渲染期才降级：' + String(error?.message ?? error))
+  }
+  // 工厂要么给出组件，要么给出 null；两者都算安静退场
+  assert.ok(cell === null || typeof cell === 'function', '工厂应返回组件或 null')
+})
+
+test('渲染冒烟：会话菜单两项在 primitives 缺失时返回 null（不抛错）', () => {
+  // 这两项复用官方 `MenuItemButton`；官方 primitives 拿不到时必须安静退场，
+  // 而不是注册一条看不见的空行（见 AGENTS.md「侧栏会话「⋯」菜单可加」）。
+  const client = loadClient()
+  const t = (key) => key
+  for (const name of ['CopySessionIdMenuItem', 'ExportSessionMenuItem']) {
+    const view = client[name]
+    assert.equal(typeof view, 'function', name + ' 应已导出')
+    let result
+    try {
+      result = view({ sessionId: 's-1', useMenuOpenState: () => [false, () => {}], t })
+    } catch (error) {
+      assert.fail(name + ' 不该抛错：' + String(error?.message ?? error))
+    }
+    assert.ok(result === null || typeof result === 'object', name + ' 应返回元素或 null')
+  }
+})
+
+test('渲染冒烟：GitStatusCell 在无会话时安静退场', () => {
+  const client = loadClient()
+  const t = (key) => key
+  let result
+  try {
+    result = client.GitStatusCell({ t, sessionId: undefined, useSession: () => false, useProjection: () => null })
+  } catch (error) {
+    // 该组件用 React.useState/useRef，替身环境下允许抛"hook 未激活"这类错误，
+    // 但那必须是替身的限制，不是组件自身的 ReferenceError。
+    const msg = String(error?.message ?? error)
+    assert.ok(!/is not defined/.test(msg), '不应是未定义引用（那才是真 bug）：' + msg)
+    return
+  }
+  assert.ok(result === null || typeof result === 'object', '应返回元素或 null')
+})
+
+//#region 导出会话日志（对抗性审计 AA-UX-001 / AA-BE-001 / AA-TEST-001 的整改）
+// 第一版实现直接 `anchor.click()` 就报成功，于是 401/404/500 全显示"正在导出…"。
+// 官方做法是**先 HEAD 预检**，只有 2xx 才交给下载管理器。下面把三态都钉住。
+
+/**
+ * 导出动作的测试账本。
+ *
+ * ⚠ 两个替身的注入通道**不一样**：`load-client.mjs` 把 `document` 作为**参数**送进模块
+ * 作用域（所以只能走 `options.document`，设 `globalThis.document` 无效 —— 踩过），
+ * 而 `fetch` 不在参数列表里，模块从全局取，改 `globalThis.fetch` 即可。
+ *
+ * @returns `{ options, calls, restore }`：`options` 交给 `loadClient`，`calls` 供断言。
+ */
+function exportHarness() {
+  const calls = { fetch: [], anchors: [], nextStatus: 200 }
+  const savedFetch = globalThis.fetch
+  globalThis.fetch = (url, init) => {
+    calls.fetch.push({ url: String(url), method: init?.method ?? 'GET' })
+    const status = calls.nextStatus
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      text: () => Promise.resolve(status >= 200 && status < 300 ? '' : 'nope'),
+    })
+  }
+  const options = {
+    document: {
+      // ⚠ `options.document` 是**浅合并**到基础替身上的，所以这里的 createElement
+      // 必须自带 `dataset` —— 模块加载时会往 `tag.dataset.plugin` 写样式表标记，
+      // 少了它整块加载直接抛错（踩过）。
+      createElement: (tag) => {
+        const el = { tag, dataset: {}, style: {}, href: '', download: '', rel: '',
+          clicked: false, removed: false,
+          click() { this.clicked = true }, remove() { this.removed = true } }
+        // 只记 `<a>`：模块加载时会用 createElement 注入自己的 <style>，那不属于导出动作。
+        if (tag === 'a') calls.anchors.push(el)
+        return el
+      },
+      body: { appendChild: () => {}, removeChild: () => {} },
+    },
+  }
+  return {
+    options,
+    calls,
+    restore() {
+      if (savedFetch === undefined) delete globalThis.fetch
+      else globalThis.fetch = savedFetch
+    },
+  }
+}
+
+test('导出：HEAD 预检通过后才触发下载，URL 参数正确', async () => {
+  const h = exportHarness()
+  const client = loadClient(h.options)
+  try {
+    // 直接调内部入口：组件需要官方 primitives 才能渲染，这里测的是导出动作本身。
+    assert.equal(typeof client.__runExportForTest, 'function', '导出动作必须可被测试直接驱动')
+    const ok = await client.__runExportForTest('abc-123')
+    assert.equal(ok, true, '预检 2xx 时应报成功')
+    assert.equal(h.calls.fetch.length, 1, '应恰好一次预检请求')
+    assert.equal(h.calls.fetch[0].method, 'HEAD', '预检必须是 HEAD（不构建 ZIP）')
+    assert.match(h.calls.fetch[0].url, /sessionId=abc-123/, 'URL 必须带 sessionId')
+    assert.match(h.calls.fetch[0].url, /includeDescendants=true/, '应包含子会话')
+    assert.equal(h.calls.anchors.length, 1, '预检通过后应创建下载锚点')
+    assert.equal(h.calls.anchors[0].clicked, true, '锚点必须被点击')
+  } finally {
+    h.restore()
+  }
+})
+
+test('导出：HEAD 返回非 2xx 时【绝不触发下载】且报失败', async () => {
+  const h = exportHarness()
+  const client = loadClient(h.options)
+  try {
+    for (const status of [401, 404, 500]) {
+      h.calls.nextStatus = status
+      h.calls.anchors.length = 0
+      const ok = await client.__runExportForTest('abc-123')
+      assert.equal(ok, false, 'HTTP ' + status + ' 必须报失败，不能谎报成功')
+      assert.equal(h.calls.anchors.length, 0, 'HTTP ' + status + ' 时**不应**创建下载锚点')
+    }
+  } finally {
+    h.restore()
+  }
+})
+
+test('导出：同一会话连点只发起一次预检（并发折叠）', async () => {
+  const h = exportHarness()
+  const client = loadClient(h.options)
+  try {
+    const results = await Promise.all([
+      client.__runExportForTest('same-id'),
+      client.__runExportForTest('same-id'),
+      client.__runExportForTest('same-id'),
+    ])
+    assert.deepEqual(results, [true, true, true], '复用同一次在飞导出')
+    assert.equal(h.calls.fetch.length, 1, '三次连点只应有一次 HEAD（连点不得重复触发宿主构建 ZIP）')
+  } finally {
+    h.restore()
+  }
+})
+//#endregion
