@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 三条「静默失败」规则的可执行校验（审计 AUD-GOV-001 / 任务书 P1.2）。
+ * 四条「静默失败」规则的可执行校验（审计 AUD-GOV-001 / 任务书 P1.2）。
  *
- * 为什么需要它：dsh-sym 有三处极易犯、且**违反后不报错**的约定 —— 表现一律是
- * "界面上没出现/没变化"，而不是抛异常。本轮会话里它们各被违反过一次：
+ * 为什么需要它：dsh-sym 有四处极易犯、且**违反后不报错**的约定 —— 表现一律是
+ * "界面上没出现/没变化"，而不是抛异常。前三处在同一轮会话里各被违反过一次：
  *
  *   1. **跨端常量失配** —— 两端各持一份拷贝（客户端是浏览器 module factory，
  *      宿主是 Node 模块，不能共享）。失配时数据不显示，控制台无提示。
@@ -12,6 +12,9 @@
  *      浏览器永远读到旧代码（本轮为此让用户白等了两轮）。
  *   3. **投影 view 字段漂移** —— 客户端读的是 `wire.view` 的结果，**不是宿主 state**。
  *      形状不对时组件恒返回 null，格子静默消失（本轮连错三版）。
+ *   4. **版本号跳段** —— 规则是"三段、每段最多两位数字、每次只加 0.0.1"（用户 2026-10-16 定），
+ *      而工具与直觉都偏向语义化版本：`npm version major` 会推出 2.0.0，顺手也容易写成 1.9.0。
+ *      违反不会让任何功能报错，只会在发布那一刻与规则冲突。
  *
  * 用法：`npm run check`（或 `node scripts/check-invariants.mjs`）。
  * 退出码：0 = 全部通过；1 = 有违规（并打印修复指引）。
@@ -30,6 +33,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import { isValidVersion, versionFromTag, looksLikeVersionTag, checkVersionAgainst } from './version-rule.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HOST_SRC = join(ROOT, 'lib', 'host-v19.js')
@@ -168,6 +173,63 @@ function readOrFail(path, check) {
       }
     }
     if (failures.every((f) => f.check !== CHECK)) notes.push(CHECK + '：contextLoss / sessionCost 的 view 字段齐备')
+  }
+}
+
+// ── 检查 4：版本号规则 ────────────────────────────────────────────────────
+{
+  const CHECK = '版本号规则'
+
+  /** 本地 tag 清单；git 不可用 / 不是仓库时返回空数组（环境问题，不判失败）。 */
+  function gitTags() {
+    try {
+      const r = spawnSync('git', ['tag', '--list'], { cwd: ROOT, encoding: 'utf8', timeout: 5000 })
+      if (r.status !== 0 || typeof r.stdout !== 'string') return []
+      return r.stdout.split('\n').map((s) => s.trim()).filter((s) => s.length > 0)
+    } catch { return [] }
+  }
+
+  const RULE = '规则：三段、每段最多两位数字（0–99）、每次只在第三段 +1（满 99 进位）。\n'
+    + '    口径见 CHANGELOG.md 顶部「发布规则」；可执行实现见 scripts/version-rule.mjs。'
+
+  const pkg = readOrFail(join(ROOT, 'package.json'), CHECK)
+  if (pkg !== null) {
+    let version = null
+    try {
+      version = JSON.parse(pkg).version ?? null
+    } catch (error) {
+      fail(CHECK, 'package.json 解析失败：' + String(error?.message ?? error), '修好 JSON 语法。')
+    }
+
+    // ① 格式：不合规则当场报，不等 tag 比较。
+    if (version !== null && !isValidVersion(version)) {
+      fail(CHECK, 'package.json 的 version "' + version + '" 不合规则', RULE
+        + '\n    反例：1.8.100（段超两位）、01.8.1（前导零）、1.8（段数不对）。')
+    }
+
+    const tags = gitTags()
+
+    // ② 看起来像版本号的 tag 也要合规则 —— `v1.8.100` 不能因为"解析不出来"就被静默跳过。
+    for (const tag of tags) {
+      if (looksLikeVersionTag(tag) && versionFromTag(tag) === null) {
+        fail(CHECK, 'tag ' + tag + ' 不合版本号规则', RULE)
+      }
+    }
+
+    // ③ 递增：只允许「等于最新 tag」或「等于它的下一个版本」，其余（含"看起来更合理"的 1.9.0）都违规。
+    if (version !== null && isValidVersion(version)) {
+      const verdict = checkVersionAgainst(version, tags.map(versionFromTag).filter((v) => v !== null))
+      if (!verdict.ok) {
+        fail(CHECK, 'version ' + version + ' 既不是最新 tag（' + verdict.latest + '），也不是它的下一个版本',
+          RULE + '\n    从 ' + verdict.latest + ' 出发只能是 '
+          + (verdict.expected === null ? '（已到 99.99.99，无法再升）' : verdict.expected)
+          + '。**不要**用 `npm version minor` / `npm version major`，也不要按语义化版本推。')
+      } else if (verdict.latest === null) {
+        notes.push(CHECK + '：' + version + ' 格式合法（无版本 tag 可比，跳过递增校验）')
+      } else {
+        notes.push(CHECK + '：' + version + '（最新 tag ' + verdict.latest + '）')
+      }
+    }
   }
 }
 
