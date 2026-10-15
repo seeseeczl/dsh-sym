@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 四条「静默失败」规则的可执行校验（审计 AUD-GOV-001 / 任务书 P1.2）。
+ * 五条「静默失败」规则的可执行校验（审计 AUD-GOV-001 / 任务书 P1.2）。
  *
- * 为什么需要它：dsh-sym 有四处极易犯、且**违反后不报错**的约定 —— 表现一律是
- * "界面上没出现/没变化"，而不是抛异常。前三处在同一轮会话里各被违反过一次：
+ * 为什么需要它：dsh-sym 有五处极易犯、且**违反后不报错**的约定 —— 表现一律是
+ * "界面上没出现/没变化"，而不是抛异常。前四处在同一轮会话里各被违反过一次：
  *
  *   1. **跨端常量失配** —— 两端各持一份拷贝（客户端是浏览器 module factory，
  *      宿主是 Node 模块，不能共享）。失配时数据不显示，控制台无提示。
@@ -15,6 +15,9 @@
  *   4. **版本号跳段** —— 规则是"三段、每段最多两位数字、每次只加 0.0.1"（用户 2026-10-16 定），
  *      而工具与直觉都偏向语义化版本：`npm version major` 会推出 2.0.0，顺手也容易写成 1.9.0。
  *      违反不会让任何功能报错，只会在发布那一刻与规则冲突。
+ *   5. **用户级指令存档漂移** —— 版本号规则同时写在本机 `~/.dsh/AGENTS.md`（全局生效）与
+ *      仓库存档 `docs/dsh-user-agents.md`。存档是为了换机/重装后能恢复那条全局规则；
+ *      两边不同步时存档就失去意义，而没有任何东西会报错。
  *
  * 用法：`npm run check`（或 `node scripts/check-invariants.mjs`）。
  * 退出码：0 = 全部通过；1 = 有违规（并打印修复指引）。
@@ -40,6 +43,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HOST_SRC = join(ROOT, 'lib', 'host-v19.js')
 const CLIENT_SRC = join(ROOT, 'lib', 'client.js')
 const PACKED_CLIENT = join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-sym', 'lib', 'client.js')
+const USER_AGENTS = join(homedir(), '.dsh', 'AGENTS.md')
+const ARCHIVED_USER_AGENTS = join(ROOT, 'docs', 'dsh-user-agents.md')
 
 const failures = []
 const notes = []
@@ -57,6 +62,18 @@ function readOrFail(path, check) {
     fail(check, '读不到 ' + path + '：' + String(error?.message ?? error), '确认路径存在且可读。')
     return null
   }
+}
+
+/**
+ * 真实字节数。
+ *
+ * ⚠ 报大小**不能**用 `String.length` —— 那是字符数（一个中文算 1），与 `ls` 看到的数字对不上。
+ * 2026-10-16 实测：`~/.dsh/AGENTS.md` 是 1030 字节 / 534 字符，`lib/client.js` 是
+ * 197618 字节 / 175150 字符。比较内容用字符串相等即可（同编码下等价于逐字节），
+ * 但凡是要**报出来给人看**的数字都走这个函数。
+ */
+function bytes(text) {
+  return Buffer.byteLength(text, 'utf8')
 }
 
 // ── 检查 1：跨端契约常量一致 ───────────────────────────────────────────────
@@ -99,12 +116,12 @@ function readOrFail(path, check) {
   } else if (local !== null) {
     const packed = readOrFail(PACKED_CLIENT, CHECK)
     if (packed !== null && packed !== local) {
-      fail(CHECK, '工作副本与 profile 包副本不一致（' + local.length + ' vs ' + packed.length + ' 字节）',
+      fail(CHECK, '工作副本与 profile 包副本不一致（' + bytes(local) + ' vs ' + bytes(packed) + ' 字节）',
         '客户端半边按包名解析到包副本，界面读的是它。执行：\n'
         + '      cp ~/GitHub/DSH-Sym/lib/client.js ~/.dsh/profiles/desktop/node_modules/dsh-sym/lib/client.js\n'
         + '    然后完全退出 DSH（Cmd+Q）再打开 —— 该应用没有刷新快捷键。')
     } else if (packed !== null) {
-      notes.push(CHECK + '：与包副本逐字节一致（' + local.length + ' 字节）')
+      notes.push(CHECK + '：与包副本逐字节一致（' + bytes(local) + ' 字节）')
     }
   }
 }
@@ -228,6 +245,28 @@ function readOrFail(path, check) {
         notes.push(CHECK + '：' + version + ' 格式合法（无版本 tag 可比，跳过递增校验）')
       } else {
         notes.push(CHECK + '：' + version + '（最新 tag ' + verdict.latest + '）')
+      }
+    }
+  }
+}
+
+// ── 检查 5：用户级指令的仓库存档 ──────────────────────────────────────────
+{
+  const CHECK = '用户级指令存档'
+  if (!existsSync(USER_AGENTS)) {
+    // 别的机器上没有这份全局指令是正常态（它本来是本机配置），跳过而不是判失败。
+    notes.push(CHECK + '：本机没有 ~/.dsh/AGENTS.md，本项跳过')
+  } else {
+    const live = readOrFail(USER_AGENTS, CHECK)
+    const kept = readOrFail(ARCHIVED_USER_AGENTS, CHECK)
+    if (live !== null && kept !== null) {
+      if (live !== kept) {
+        fail(CHECK, '本机 ~/.dsh/AGENTS.md 与仓库存档 docs/dsh-user-agents.md 不一致（'
+          + bytes(live) + ' vs ' + bytes(kept) + ' 字节）',
+          '存档的意义是换机/重装后能恢复那条全局规则（版本号规则就写在里面），不同步就白存。执行：\n'
+          + '      cp ~/.dsh/AGENTS.md ~/GitHub/DSH-Sym/docs/dsh-user-agents.md')
+      } else {
+        notes.push(CHECK + '：与仓库存档逐字节一致（' + bytes(live) + ' 字节）')
       }
     }
   }
