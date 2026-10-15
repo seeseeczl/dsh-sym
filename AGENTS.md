@@ -265,6 +265,16 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
   用不带参数的 `node --test`。**
 - 但**回归只覆盖纯函数**：渲染、插槽注册、热更新仍要人工实测，改动宿主仍必须重启验证。
 
+## 版本号规则（用户 2026-10-16 定，勿按 semver 自行判断）
+
+**三段、每段最多两位数字；每次更新只在第三段 +1。**
+
+- 正常递增是 `+0.0.1`：`1.8.0` → `1.8.1` → `1.8.2`……**不因为"这是新功能"就动第二段**。
+- 满 99 才进位：`1.8.99` → `1.9.0`；`1.99.99` → `2.0.0`；到 `99.99.99` 为止。
+- 所以**不要**用 `npm version minor` / `npm version major`，也不要按语义化版本推下一个版本号。
+- 完整口径的唯一事实源是 `CHANGELOG.md` 顶部的「发布规则」，本节只是摘要，**别在这里另立一套**。
+- 用户级 `~/.dsh/AGENTS.md` 里有一条同义的全局规则；项目级（本文件）优先。
+
 ## 治理产物
 
 - 需求与架构基线：`docs/01-architecture/project-architecture-and-requirements.md`
