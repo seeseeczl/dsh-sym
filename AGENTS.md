@@ -280,6 +280,8 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
 - 需求与架构基线：`docs/01-architecture/project-architecture-and-requirements.md`
 - 任务书（12 张原子任务卡）：`docs/04-delivery/project-plan-task-charter.md`
 - 事实源（LOC 阈值 / 模块路径 / 公开契约 / 忽略项）：`.project-architect.json`
+- 用户级指令存档：`docs/dsh-user-agents.md` —— 本机 `~/.dsh/AGENTS.md` 的**逐字节副本**，
+  由 `npm run check` 第 5 条不变量守卫。改一边就要同步另一边（`cp` 一条命令）。
 - 审计产物（未来）：`docs/05-audits/YYYY-MM-DD-HHMMSS-*.md`，同一时间戳，**永不覆盖历史**
 
 **审计默认只读**：除非明确授权修复，不修改业务代码、配置、依赖或远程状态，不把发现顺手重构。
@@ -306,6 +308,14 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
   `node_modules/dsh-sym`，锁定 commit `eed6b3f` = 1.5.0），profile 的 `cordis.patch.yml` 里那条
   `file://` 已被删掉。**后果：改工作副本（`~/GitHub/DSH-Sym`）不会进正在运行的 App**，
   界面读的是 `node_modules/dsh-sym` 里那一份。
+- ⚠ **再更正（2026-10-16 实测）**：profile 现在是 **tarball 形态**，且 `cordis.patch.yml` 里
+  **一条 sym 条目都没有**（`sym-cost` 与 `sym-dev` 都不存在）——
+  `dsh-sym: file:/Users/long/.dsh-sym-packages/dsh-sym-<版本>.tgz`，随 `dsh.profile.bundles`
+  里那条 `dsh-sym` 装配。**该 tarball 由工作副本 `npm pack` 产出，不是 git 依赖**，
+  所以「更新」= 重新 pack → 装 → **Cmd+Q 重启**；`pnpm update dsh-sym` 对 tarball 无效。
+  之所以走 tarball：本机到 codeload 的下行只有 ~36 KB/s，而 pnpm 对 git tarball 有 **60 秒硬超时**
+  （`fetch-timeout` 配置**改不动**它，2026-10-16 实测；2026-10-06 曾误判为"改 .npmrc 后成功了"，
+  实际那次只是重试撞上了网速较好的窗口）。
   - 两条实测结论：① profile patch 里 `- id: sym-cost` + `name: file://…` 这种**id 定向覆盖改不动
     `name`**（补丁层只覆盖 `config`）；② entry 的 specifier 还是 `dsh-sym` 时，**宿主模块被模块
     缓存钉住**，把包内文件换成新内容、甚至改 `package.json` 的 `main` 到新文件名都不生效

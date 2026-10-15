@@ -19,10 +19,10 @@
 ```bash
 # ① 源机器：打包
 cd ~/GitHub/DSH-Sym
-npm pack                     # 得到 dsh-sym-1.5.0.tgz（约 240 KB）
+npm pack                     # 得到 dsh-sym-<版本>.tgz
 
 # ② 把 tgz 拷到目标机器，然后安装
-dsh plugin --profile desktop add ./dsh-sym-1.5.0.tgz
+dsh plugin --profile desktop add ./dsh-sym-<版本>.tgz
 ```
 
 `dsh` 可执行文件在 `…/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`，
@@ -42,7 +42,7 @@ dsh plugin --profile desktop add /path/to/dsh-sym
 
 ```bash
 cd ~/GitHub/DSH-Sym
-git init && git add -A && git commit -m "dsh-sym 1.5.0"
+git init && git add -A && git commit -m "dsh-sym <版本>"
 git remote add origin git@github.com:<你>/dsh-sym.git && git push -u origin main
 
 # 目标机器
@@ -88,7 +88,7 @@ peer 版本必须与目标 DSH 完全一致（例如运行时是 `0.2.0-rc.2`，
 - [x] `dsh.bundle.patch` 指向 `cordis.patch.yml`，后者用**裸包名** insert 自己
 - [x] `exports["./client"]` 指向 `lib/client.js`（浏览器侧产物，`window.__ModuleLoader__` 格式）
 - [x] 零依赖：宿主侧只用 `node:fs` / `node:path` / `node:url`，浏览器侧只用平台自带的 `react`
-- [x] `npm pack` 的 `files` 清单只含必要文件（19 个，约 240 KB）
+- [x] `npm pack` 的 `files` 清单只含必要文件 —— 跑 `npm run check:pack` 核对（它会打印真实文件数与清单，别在这里写死数字，会腐坏）
 - [ ] 公开前把 README 里与本机相关的路径、备份目录名清掉或通用化
 - [ ] `npm pack --dry-run` 再看一眼清单
 - [ ] 版本号按规则**只加 0.0.1**（三段、每段最多两位数字，满 99 才进位）—— 口径见 `CHANGELOG.md` 顶部「发布规则」
@@ -100,11 +100,16 @@ peer 版本必须与目标 DSH 完全一致（例如运行时是 `0.2.0-rc.2`，
 
 ```yaml
 - insert:
-    - id: session-cost
+    - id: sym-cost
       name: '/绝对路径/dsh-sym/lib/host-v19.js'
 ```
 
-这正是本机当前使用的形态（见 `~/.dsh/profiles/desktop/cordis.patch.yml`）。
+⚠ **id 必须与包内 `cordis.patch.yml` 一致（都是 `sym-cost`）**。写成别的 id 会变成"两条
+条目同时提供 `dsh-sym`"，客户端的模块图按包名去重，只会发出其中一份 —— 表现是宿主新、客户端旧，
+而且没有任何报错。
+
+本机的 profile **现在不用这个形态**（见 `~/.dsh/profiles/desktop/package.json`：它装的是
+从工作副本打出的 tarball），所以上面这段只是保底手段。
 好处是完全不依赖包管理器；代价是改代码要靠「停用 → 换文件名 → 启用」来热替换，
 或者干脆重启 App。
 
