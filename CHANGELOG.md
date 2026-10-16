@@ -62,6 +62,38 @@
 - 不变量 **3 → 5 条**，回归 **104 → 110 项**。
 - `M-CLIENT` 本版未改动（硬上限只剩 51 行余量，本版不需要动它）。
 
+## [1.8.2] - 2026-10-16
+
+本版把对话视图环的第三个标签**保留为占位**（撤除其中内嵌 chat.deepseek.com 的尝试），
+并给客户端的槽组件补上两条"删干净了没有"的守卫。
+
+### 界面
+
+- **对话视图环的第三个标签（占位）**：注册在 `conversation.view`（order 20，排在官方
+  「对话」0、「轨迹」10 之后），**纯加法** —— 槽是 `list` 型、`replaceRisk: none`，
+  官方那两个标签一个像素都不动。标签文字走 `label` thunk，跟随界面语言。
+  正文目前只显示一句「这个区域待建设」，**作为以后改造成其他功能区域的挂点**。
+  它是"内嵌 chat.deepseek.com"那次尝试撤除后留下的位置（见下），不是一次独立的新功能。
+
+### 撤除
+
+- **内嵌 `chat.deepseek.com` 的尝试**（同日实现后又撤除）。三条**平台级**制约让它无法可用：
+  1. **站点风控**：非官方客户端会被弹「Abnormal usage environment」阻断提示（服务端判定）。
+  2. **登录态不跨 App 重启**：guest 分区由主进程 `acquire()` 生成为**无前缀**内存分区；
+     带 `persist:` 前缀的持久分区是主进程按账号建的专用 session，插件够不着，且
+     `partition` 必须原样回填，否则 `will-attach-webview` 直接拒绝。
+     插件能做到的上限是：**登录一次，本次运行内一直有效**（分区按 workspace 缓存，
+     `release()` 不清缓存 —— 所以 `chatWorkspaceKey` 用**固定键**，让全部会话共用一个分区）。
+  3. **界面只能是英文**：macOS 上 `app.getLocale()` 从 `Info.plist` 的本地化声明推断，
+     而 DSH 的 `Info.plist` 没有任何 `CFBundleLocalizations`（系统语言是 `zh-Hans-CN`）
+     → Chromium 回落 `en-US`。三条修法全被堵死：`<webview accept-languages>` 会被主进程
+     `Reflect.deleteProperty` 清光所有 webpreferences；`onBeforeSendHeaders` 是分区 session 级、
+     插件拿不到；改 UA 无 API 且属伪装。
+
+  技术上页面**能正常加载渲染**（登录界面完整可见），撤除是因为上述体验制约，不是加载失败。
+  踩过的三个真 bug（`loadURL` 必须在 `dom-ready` 后、导航必须有一次性闸门否则死循环、
+  webview 宿主必须是 React 渲染的空节点）已完整记入 `AGENTS.md`，供以后做内嵌网页时复用。
+
 ## [1.8.0] - 2026-10-14
 
 本版新增**上下文压缩统计**读数，并把项目里三条"违反了也不报错"的约定变成可执行校验。

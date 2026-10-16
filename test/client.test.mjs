@@ -724,6 +724,41 @@ test('渲染冒烟：GitStatusCell 在无会话时安静退场', () => {
   assert.ok(result === null || typeof result === 'object', '应返回元素或 null')
 })
 
+//#region 视图环占位（conversation.view）—— 2026-10-15
+
+test('占位视图：注册在 conversation.view、order 排在官方 trajectory 之后、label 是 thunk', () => {
+  // 标签本体保留（以后改成别的功能区域的挂点）—— 这是"纯加法"的守卫：
+  // order 必须 > 10（官方 trajectory），id 不与官方 chat 相撞，label 必须能跟随界面语言。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(src, /"conversation\.view",\s*"sym-view",\s*20/, '应注册为 conversation.view 的 sym-view，order 20')
+  assert.match(src, /label:\s*\(\)\s*=>\s*localeLabel\(ctx,\s*"symViewTab"\)/, 'label 必须是 thunk，才能跟随界面语言')
+})
+
+test('占位视图：组件能渲染且不抛错（无 hook、无副作用）', () => {
+  const client = loadClient()
+  assert.equal(typeof client.SymViewPlaceholder, 'function', '占位组件应已导出')
+  let result
+  try {
+    result = client.SymViewPlaceholder({ t: (key) => key })
+  } catch (error) {
+    assert.fail('占位组件不该抛错：' + String(error?.message ?? error))
+  }
+  assert.ok(result !== null && typeof result === 'object', '应返回元素')
+})
+
+test('占位视图：内嵌聊天已撤除（不再有 webview / 租约 / 站点地址的代码残留）', () => {
+  // 撤除的原因（站点风控 / 登录不跨重启 / 语言锁死 en-US）见 AGENTS.md。
+  // 守卫"确实清干净了"。⚠ 注释里**允许**提到 chat.deepseek.com（那是给后人解释为什么撤除），
+  // 所以下面剥掉注释再查 —— 只看真实代码残留。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  for (const gone of ['chat.deepseek.com', 'dshDesktop', 'createElement("webview")', 'dshSymChat_', 'loadURL', 'acquire(']) {
+    assert.ok(!code.includes(gone), '应已彻底移除（代码残留）：' + gone)
+  }
+  assert.ok(src.includes('chat.deepseek.com'), '撤除原因应留在注释里，供后人查')
+})
+//#endregion
+
 //#region 导出会话日志（对抗性审计 AA-UX-001 / AA-BE-001 / AA-TEST-001 的整改）
 // 第一版实现直接 `anchor.click()` 就报成功，于是 401/404/500 全显示"正在导出…"。
 // 官方做法是**先 HEAD 预检**，只有 2xx 才交给下载管理器。下面把三态都钉住。

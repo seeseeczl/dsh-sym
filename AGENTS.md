@@ -471,6 +471,105 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
 `pnpm run dev:web`（bundle watcher 会把重建后的模块推给浏览器）。
 **没有 watcher 时改了 `lib/client.js`，浏览器永远不会知道。**
 
+### 内嵌网页必须走 guest 租约，裸 `<webview>` 会被静默拒绝（2026-10-15 查 asar 证实）
+
+> **现状（2026-10-15 终态）**：内嵌 chat.deepseek.com 的尝试**已撤除** —— 三条平台级制约
+> 让它无法可用（见下一节）。`conversation.view` 的第三个标签**保留为占位**（`sym-view`，
+> 正文只显示一句「这个区域待建设」），作为以后改造成其他功能区域的挂点。
+> **下面这一节的技术结论仍然有效**，是为"以后还要做内嵌网页"留的：那是当时查清、并踩过三个
+> 真 bug 才走通的完整落地路径，重做时按它来，别从零试。
+
+- 桌面主进程在 `DesktopBrowserGuests.bind()`（asar ~120791788）里对**主窗口**装了
+  `will-attach-webview` 钩子。校验规则：`src` 必须形如 `about:blank#<lease>`、lease 属于本窗口、
+  且 `params.partition` 与批准值一致 —— **否则 `event.preventDefault()`**。
+  于是裸 `<webview src="https://…">` 表现为"元素在 DOM 里、永远不加载、没有任何报错"。
+- 正确序列：`window.dshDesktop.browser.acquire(workspace)` → 拿到 `{ lease, partition }`
+  → `document.createElement("webview")` 设 `name` / `partition` / `allowpopups` /
+  `src = "about:blank#" + lease`（官方 `ElectronWebviewPresentation.createElement` 设的就是这五个）
+  → **追加进容器** → **等 `dom-ready` 事件** → 才 `loadURL(目标)`。卸载时 `release(lease)`。
+- ⚠ **`loadURL` 必须挂在 `dom-ready` 上，这是踩过的实机故障（2026-10-15）**：webview 在 attach
+  之前调 `loadURL` 会 **reject**，而主进程也正是在 `did-attach-webview` 的 `dom-ready` 上才按
+  URL 里的 lease 认领 guest。第一版写成"`appendChild` 之后立刻 `await element.loadURL(...)`"，
+  异常被 catch 吞成降级 → 界面表现是**标签在、内容却是一句失败说明**。官方同样是在
+  `dom-ready` 里才 `loadPending()`。守卫在 `test/client.test.mjs`（断言 loadURL 在 dom-ready
+  回调内、且不得出现挂载前的 `await element.loadURL`）。
+- ⚠ **失败说明要做成浮层，宿主容器必须始终留在树上**：`hostRef.current` 只在容器渲染时才绑得上，
+  一旦失败态把容器整个换成说明块，effect 会因 `host === null` 直接退出，**「重新载入」永远无效**
+  （点了没反应）。守卫同上。
+- **这条通道对插件可达**：`dsh-desktop:browser-acquire` 的 handler 只做 `assertProductSender`
+  （主窗口 + 主框架 + `dsh-app:` 协议），而插件的客户端半边正跑在这个框架里。
+  preload 的暴露面是 `lib/types/preload-browser.js` 的 `createDesktopBrowserBridge`。
+- **分区（cookie / web storage 的载体）的两条硬事实**（2026-10-15 查 asar）：
+  - **进程内稳定，跨重启丢失**。`acquire(workspace)` 生成的是 `dsh-sidebar-browser-<uuid>`
+    —— **无前缀 = 内存分区**，进程结束即丢。官方账号页能免重复登录，是因为它显式用了
+    `persist:` 前缀（`persist:dsh-platform-<sha256([origin,userId])>`）；那是主进程按 `account`
+    建的**账号专用 session**，插件改不到。而 `acquire()` 给的 partition 必须**原样**回填给
+    `<webview partition>`，否则 `will-attach-webview` 直接拒绝 —— 所以插件**无法**让分区落盘。
+  - **`workspace` 参数是分区的唯一开关**，主进程用 `this.partitions` 按它缓存，且 `release()`
+    **只删租约、不删缓存** → 切标签 / 切会话 / 关了再开，cookie 都还在。
+  - → 所以 `chatWorkspaceKey()` 必须是**固定键**（现在是常量 `"dsh-sym-chat"`）。曾经掺过
+    sessionId，后果是"在 A 会话登录了、切到 B 会话又要再登一次"。**别再按会话分开。**
+  - → 结论：**登录一次，本次运行内一直有效；重启 App 需重新登录。** 这是平台限制的上限。
+- 这也是"官方浏览器 View 能否从 `sidebar.right.pane.tab` 借到 `conversation.view`"那问的答案：
+  **不必借**。自建 View + 租约即可，且不依赖官方内部槽结构。
+
+### 「不自动带上 DSH 的登录态」和「英文界面」都改不了（2026-10-15 查证）
+
+用户问过"为什么不自动读取客户端已登录的账号""为什么是英文"。**两条都有确切原因，且都不该再投入**：
+
+1. **凭据是两套，物理不通**。DSH 登录 DeepSeek 走 **OAuth**（asar 里有 `auth_url` / `device_code`
+   分支），凭据存在 DSH 自己的凭据库；chat.deepseek.com 用的是**浏览器 cookie**。存储位置、
+   形式、域名三者都不同。**没有任何机制能让网页读到 DSH 的凭据** —— 手工把 token 塞成 cookie
+   属于伪造会话，不做。
+2. **英文界面是 App 没声明本地化导致的，且插件够不着**：macOS 上 `app.getLocale()` 从
+   `Info.plist` 的本地化声明推断，而 DSH 的 `Info.plist` **没有任何 `CFBundleLocalizations`**
+   （系统语言明明是 `zh-Hans-CN`）→ Chromium 回落到 `en-US` → webview 发
+   `Accept-Language: en-US` → 站点渲染英文。
+   三条修法**全部被堵死**：① `<webview accept-languages>` 无效 —— 主进程在
+   `will-attach-webview` 里 `for (const key of Object.keys(preferences)) Reflect.deleteProperty(...)`
+   **删光所有 webpreferences** 再写回自己那组；② `webRequest.onBeforeSendHeaders` 是分区
+   session 级，插件拿不到该 session；③ 改 UA 无对应 API，且属伪装。
+   ⚠ 注意 DSH 外壳**自己**有 `resolveDesktopLocale()` 读系统语言，但**只用于桌面 UI**，从不传给 webview。
+
+### chat.deepseek.com 在 guest 里被判定「异常使用环境」，不要试图绕过（2026-10-15 实测）
+
+「聊天」标签最终**能把页面加载出来**（登录界面完整渲染），但站方会弹一个阻断提示：
+
+> **Abnormal usage environment** — The current usage environment may pose data and privacy
+> risks. For your security, we recommend using our official product.
+
+**这是服务端的风控判定，不是本插件的缺陷。** 证据（都查自 asar）：
+
+1. **官方从不访问 chat.deepseek.com** —— 全库 `chat.deepseek.com` 出现 **0 次**。官方的内嵌
+   浏览器（`WebContentsView` + guest 租约）只服务**账号页**，`allowNavigation` 把它锁死在
+   `account.origin`。
+2. **官方的客户端标识注入严格限定在 `account.origin`**，而且对非该 origin 的请求会**反向移除**
+   这些头（`onBeforeSendHeaders` 里的 `else if (injectedRequests.has(id))` 分支）。
+   即：`x-client-platform` / `x-client-version` / `x-client-locale` 等头是给官方账号域名用的
+   **有意设计**，不是通用伪装。
+3. **官方也没有改写 User-Agent**（全库只有读取 UA 做浏览器识别的代码）。
+
+→ 结论：**不要再投入**"让它通过风控"这条路。往 chat.deepseek.com 注入那些头属于伪造客户端身份
+绕过风控，本插件不做；改 UA 同理。该标签的定位是"能加载、能显示"，能否登录取决于站方策略。
+
+**这个功能踩过的三个真 bug（都已修，按发现顺序）**：
+
+| # | 现象 | 根因 |
+|---|---|---|
+| 1 | 标签在、内容是失败说明 | `loadURL` 在 attach 前调用 → reject。必须等 `dom-ready` |
+| 2 | 纯白，什么都没渲染 | `dom-ready` 里**无条件** `loadURL` → 「导航→dom-ready→再导航」**死循环**。必须一次性闸门（官方是 `ready=true` + `loadPending`） |
+| 3 | 空白（结构隐患） | webview 被 append 进**同时挂着 React 子节点**的容器 → React 更新时按虚拟树对齐 DOM，把 guest 摘掉。宿主必须是 React 渲染的**空**节点 |
+
+诊断这三条靠的是**临时诊断叠层**（把事件链与 `getURL()`/尺寸画在界面上），定位后已撤除 ——
+这与「槽组件安静退场会让故障不可见」那条约定是配套的做法。
+
+**`conversation.view` 槽契约（2026-10-15 用 client/Slots 探针实测）**：`list` 型、
+`replaceRisk: none`、`scope: session`，占位者 chat(0) / trajectory(10)；`label` 支持 thunk
+（切语言自动跟随，不必重注册）。渲染侧 `ConversationSessionHeader` 只按 `order` 升序排按钮、
+`tabs.length > 1` 才显示标签栏，**不认 id**，任何新 id 都能进。
+正文 props 是 `ConvViewOwnerProps`（`inspectCall` / `viewRequest` / `openView` /
+`completeViewRequest`）——**没有 `t`**，本地化文字要自己给。
+
 **改了工作副本的客户端代码，还要同步进 profile 的包副本**（当前 profile 是
 `sym-cost` 禁用 + `sym-dev` 指向工作副本，`file://` 只接管**宿主**；客户端半边仍按包名
 `dsh-sym` 解析到 `node_modules/dsh-sym/lib/client.js`）：
