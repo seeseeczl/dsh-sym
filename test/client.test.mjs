@@ -836,14 +836,14 @@ test('提交记录：固定四列布局，无拖拽手柄（间距 24px，提交
   // 提交与时间按内容自适应（min-content）：固定列宽会在列内留一段空白，间隔显得很宽。
   // 必须是固定列宽：表头和数据行是两张独立 grid，min-content 会各算各的宽度，
   // 结果表头列比数据列窄、1fr 把表头整体推右（2026-11-03 真机错位）。
-  const template = /grid-template-columns:minmax\(0,1fr\) 76px 80px 80px;align-items:center;column-gap:24px/.exec(src)
-  assert.ok(template !== null, '主网格应为「描述 1fr / 提交 76 / 时间 80 / 操作 80」，间距 24px')
+  const template = /grid-template-columns:minmax\(0,1fr\) 96px 80px 80px;align-items:center;column-gap:24px/.exec(src)
+  assert.ok(template !== null, '主网格应为「描述 1fr / 提交 96（含复制按钮）/ 时间 80 / 操作 80」，间距 24px')
   assert.ok(!/grid-template-columns:[^;]*min-content/.test(src), '不得再用 min-content（两张 grid 之间会错位）')
   assert.equal((src.match(/dshLog_gutter/g) ?? []).length, 0, '不应再有任何拖拽手柄')
   assert.equal((src.match(/data-log-gutter/g) ?? []).length, 0, '不应再有手柄的 DOM 标记')
   assert.ok(!/startDrag|readLogColumns|saveLogColumns/.test(src), '拖拽与列宽持久化的代码应已清除')
   // 窄屏：时间列收起后剩三列
-  assert.match(src, /@container \(max-width: 620px\)\{[^}]*grid-template-columns:minmax\(0,1fr\) 76px 80px\}/, '窄屏应为 3 列')
+  assert.match(src, /@container \(max-width: 620px\)\{[^}]*grid-template-columns:minmax\(0,1fr\) 96px 80px\}/, '窄屏应为 3 列')
 })
 
 test('提交记录：三列都左对齐（表头与数据同侧起点）', () => {
@@ -910,6 +910,62 @@ test('提交记录：写操作只能由确认框的「确认」按钮触发，�
   const guardBlock = src.slice(src.indexOf('const onDown = (event) => {'), src.indexOf('}, [confirm]);'))
   assert.ok(!/write\(/.test(guardBlock), '关闭动作不得触发写')
 })
+
+test('提交记录：确认框必须屏幕居中，且不单点依赖 react-dom', () => {
+  // 真机踩过：`.dshLog_confirm` 复用了 `.dshSym_menu`（position:fixed 但没 left/top），
+  // 而它是 portal 到 body 末尾的 —— fixed + auto 会停在"静态位置"，确认框落到视口外，
+  // 用户点按钮看起来**完全没反应**，还以为是按钮坏了。两条都要钉住：
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  // ① 必须有明确的居中定位
+  const style = /\.dshLog_confirm\{([^}]*)\}/.exec(src)
+  assert.ok(style !== null, '应能取到确认框样式')
+  assert.match(style[1], /position:fixed/, '确认框用 fixed 覆盖在内容之上')
+  assert.match(style[1], /left:50%/, '必须给 left')
+  assert.match(style[1], /top:50%/, '必须给 top（只给 left 也还是错位）')
+  assert.match(style[1], /translate\(-50%,-50%\)/, '用 translate 居中')
+
+  // ② 渲染条件不得要求 ReactDOM 非空，否则内联回退永远走不到
+  assert.ok(!/confirm\.commit !== null && ReactDOM !== null/.test(src), '外层条件不该依赖 ReactDOM')
+
+  // ③ 取不到 react-dom 时必须回退到内联（否则点按钮什么都不弹）
+  assert.match(src, /if \(ReactDOM !== null && typeof document !== "undefined" && document\.body\) children\.push\(ReactDOM\.createPortal\(dialog, document\.body\)\)/, 'portal 优先')
+  assert.match(src, /else children\.push\(dialog\);/, '必须有内联回退')
+})
+
+test('提交记录：确认框照官方对话框形制，背景不透明；哈希可复制完整值', () => {
+  // 形制照官方 /renderer/update-dialog.css：宽 380 / 内距 22-24-24 / 圆角 24 /
+  // 标题 16·500 / 正文 14·22 / 按钮 44 高·圆角 12·竖排。用户明确要求"不要半透明"。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const style = /\.dshLog_confirm\{([^}]*)\}/.exec(src)
+  assert.ok(style !== null)
+  const css = style[1]
+
+  // ① 实色背景：不得是 rgba()（半透明），必须有 color-mix 提亮的实底
+  assert.match(css, /background:color-mix\(in srgb,var\(--dsw-alias-bg-base\)/, '用不透明的实色底')
+  assert.ok(!/background:rgba\(/.test(css), '背景不得半透明')
+  assert.ok(!/backdrop-filter:(?!none)/.test(css), '不得再用背景滤镜')
+
+  // ② 官方形制
+  assert.match(css, /border-radius:24px/, '圆角照官方 24px')
+  assert.match(css, /padding:22px 24px 24px/, '内距照官方 22/24/24')
+  assert.match(css, /width:min\(380px,calc\(100vw - 32px\)\)/, '宽度照官方')
+  assert.match(src, /\.dshLog_confirmTitle\{[^}]*font-size:16px[^}]*font-weight:500/, '标题 16px/500')
+  assert.match(src, /\.dshLog_confirmText\{[^}]*font-size:14px[^}]*line-height:22px/, '正文 14/22')
+  assert.match(src, /\.dshLog_confirmBtn\{[^}]*min-height:44px[^}]*border-radius:12px/, '按钮 44 高、圆角 12')
+  assert.match(src, /\.dshLog_confirmRow\{[^}]*flex-direction:column[^}]*gap:8px/, '按钮竖排、间距 8')
+
+  // ③ 遮罩 50%（V5.4 深色档；官方 update-dialog 是 24%，深底上取更重的一档）
+  assert.match(css, /box-shadow:0 0 0 100vmax rgba\(0,0,0,\.5\)/, '要有 50% 全屏遮罩')
+
+  // ④ 不再复用下拉菜单的形制（padding 4px / min-width 160 / backdrop-filter）
+  assert.ok(!/dshSym_menu dshLog_confirm/.test(src), '确认框不该再复用 .dshSym_menu')
+
+  // ⑤ 哈希复制：复制完整哈希，失败不假装成功
+  assert.match(src, /copyHash\(commit\.hash, commit\.short\)/)
+  assert.match(src, /noteDegrade\("commitLog:copy"/)
+})
+
 
 test('提交记录：组件能渲染且不抛错（无祖先时安静退场）', () => {
   const client = loadClient()
