@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 项目路径：`/Users/long/GitHub/DSH-Sym`
+- 项目路径：`~/GitHub/DSH-Sym`
 - 项目类型：DSH 客户端插件（浏览器 module factory + Node 宿主模块双半边，零依赖、无构建步骤）
 - 审计时间：2026-10-14 10:00:55（Asia/Shanghai）
 - 当前分支 / commit：`main` / `d85b1d4`
@@ -414,7 +414,7 @@
 - 严重程度：S3
 - 优先级：P2
 - 影响范围：后续所有使用 project-architect 的会话
-- 证据：`AGENTS.md` 记载"`project-architect` 等四个技能的附件（`references/` `scripts/` `assets/`）**不存在**，只有 `SKILL.md`；照方法论人工执行，**不要假装跑了校验脚本**"。实际 `/Users/long/.dsh/skills/project-architect/` 含 `scripts/`（15 个 .py）、`references/`（7 个 .md）、`assets/`（audit + blueprint 模板）、`tests/`
+- 证据：`AGENTS.md` 记载"`project-architect` 等四个技能的附件（`references/` `scripts/` `assets/`）**不存在**，只有 `SKILL.md`；照方法论人工执行，**不要假装跑了校验脚本**"。实际 `~/.dsh/skills/project-architect/` 含 `scripts/`（15 个 .py）、`references/`（7 个 .md）、`assets/`（audit + blueprint 模板）、`tests/`
 - 根因判断：该记载写于附件确实缺失的时期（skill 目录后来被补齐，时间戳 2026-08-05/10-12），未回访更新
 - 优化做法：更正该条记载；同时在文档里登记可用的校验脚本入口（本报告即使用它们完成）
 - 技术路径：文档修订

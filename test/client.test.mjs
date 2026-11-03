@@ -815,7 +815,7 @@ test('提交记录：repoName 取路径最后一段，空值不编造', () => {
   // 顶部条把仓库名显示出来 —— 2026-11-03 真机调试时，缺这一条导致
   // "0 条"到底读的是哪个目录无法判断。
   const client = loadClient()
-  assert.equal(client.repoName('/Users/long/GitHub/DSH-Sym'), 'DSH-Sym')
+  assert.equal(client.repoName('/home/dev/projects/DSH-Sym'), 'DSH-Sym')
   assert.equal(client.repoName('/a/b/c/'), 'c', '尾部斜杠忽略')
   assert.equal(client.repoName('C:\\work\\repo'), 'repo', 'Windows 反斜杠')
   assert.equal(client.repoName(''), '')
@@ -824,8 +824,8 @@ test('提交记录：repoName 取路径最后一段，空值不编造', () => {
 
 test('提交记录：载荷里的 root 要透传到模型（顶部条据此显示仓库名）', () => {
   const client = loadClient()
-  const model = client.describeCommitLog({ branch: 'main', root: '/Users/long/GitHub/DSH-Sym', commits: [], hasMore: false })
-  assert.equal(model.root, '/Users/long/GitHub/DSH-Sym')
+  const model = client.describeCommitLog({ branch: 'main', root: '/home/dev/projects/DSH-Sym', commits: [], hasMore: false })
+  assert.equal(model.root, '/home/dev/projects/DSH-Sym')
   assert.equal(client.describeCommitLog({ branch: 'main', commits: [] }).root, null, '拿不到就是 null')
 })
 

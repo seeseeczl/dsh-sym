@@ -337,7 +337,7 @@ ExportSessionMenuItem(props) -> element | null
   但**当前会话的工具集里没有投给 Agent**：Agent 跑命令走的是 `bash`（非交互、一次性、带超时
   与输出上限），交互式 TTY、需要人输密码/确认的场景做不了。
 
-- `DSH_HOME=/Users/long/.dsh`；本项目位于 `~/GitHub/DSH-Sym`（2026-09-30 搬出 profile 的
+- `DSH_HOME=$HOME/.dsh`；本项目位于 `~/GitHub/DSH-Sym`（2026-09-30 搬出 profile 的
   `plugins/` 目录）。它靠 `~/.dsh/profiles/desktop/cordis.patch.yml` 里的 `file://` 条目挂载 ——
   **换路径后必须重启 App**，宿主手里的还是旧绝对路径
 - ⚠ **上面这条在 2026-10-08 之后已经不成立（2026-10-09 实测更正）**：`~/.dsh/profiles/desktop`
@@ -347,7 +347,7 @@ ExportSessionMenuItem(props) -> element | null
   界面读的是 `node_modules/dsh-sym` 里那一份。
 - ⚠ **再更正（2026-10-16 实测）**：profile 现在是 **tarball 形态**，且 `cordis.patch.yml` 里
   **一条 sym 条目都没有**（`sym-cost` 与 `sym-dev` 都不存在）——
-  `dsh-sym: file:/Users/long/.dsh-sym-packages/dsh-sym-<版本>.tgz`，随 `dsh.profile.bundles`
+  `dsh-sym: file:$HOME/.dsh-sym-packages/dsh-sym-<版本>.tgz`，随 `dsh.profile.bundles`
   里那条 `dsh-sym` 装配。**该 tarball 由工作副本 `npm pack` 产出，不是 git 依赖**，
   所以「更新」= 重新 pack → 装 → **Cmd+Q 重启**；`pnpm update dsh-sym` 对 tarball 无效。
   之所以走 tarball：本机到 codeload 的下行只有 ~36 KB/s，而 pnpm 对 git tarball 有 **60 秒硬超时**

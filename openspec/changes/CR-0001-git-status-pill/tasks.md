@@ -112,7 +112,7 @@ evidence: []
 ```yaml
 - insert:
     - id: sym-dev
-      name: "file:///Users/long/GitHub/DSH-Sym/lib/host-v20.js"
+      name: "file:///绝对路径/dsh-sym/lib/host-v20.js"
 ```
 
 ```text
