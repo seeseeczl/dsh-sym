@@ -26,7 +26,7 @@
  * `import()`**（它第一行就调 `window.__ModuleLoader__.load`），所以常量与 view
  * 都按源码**正则提取**；正则失配按失败处理，绝不静默放过。
  *
- * ⚠ 做故障注入验证时**别用 `git checkout` 还原未跟踪文件**（`lib/host-v19.js` 就是
+ * ⚠ 做故障注入验证时**别用 `git checkout` 还原未跟踪文件**（`lib/host-v20.js` 就是
  * 未跟踪的），那条命令对 `??` 状态的文件无效，会留下一份真的被改坏的源码 ——
  * 2026-10-14 实际踩到：删掉 `lastFailed` 后用 `git checkout` 还原，字段没回来，
  * 反而是本脚本报的警才发现。还原请用 `cp` 自备份。
@@ -40,7 +40,7 @@ import { spawnSync } from 'node:child_process'
 import { isValidVersion, versionFromTag, looksLikeVersionTag, checkVersionAgainst } from './version-rule.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const HOST_SRC = join(ROOT, 'lib', 'host-v19.js')
+const HOST_SRC = join(ROOT, 'lib', 'host-v20.js')
 const CLIENT_SRC = join(ROOT, 'lib', 'client.js')
 const PACKED_CLIENT = join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-sym', 'lib', 'client.js')
 const USER_AGENTS = join(homedir(), '.dsh', 'AGENTS.md')
@@ -95,7 +95,7 @@ function bytes(text) {
     for (const rule of RULES) {
       const h = host.match(rule.host)
       const c = client.match(rule.client)
-      if (h === null) { fail(CHECK, '宿主的 ' + rule.name + ' 提取失败（正则不匹配）', '检查 lib/host-v19.js 里的定义形式；若是改名，同步更新本脚本。'); continue }
+      if (h === null) { fail(CHECK, '宿主的 ' + rule.name + ' 提取失败（正则不匹配）', '检查 lib/host-v20.js 里的定义形式；若是改名，同步更新本脚本。'); continue }
       if (c === null) { fail(CHECK, '客户端的 ' + rule.name + ' 提取失败（正则不匹配）', '检查 lib/client.js 的 contract 区；若是改名，同步更新本脚本。'); continue }
       if (h[1] !== c[1]) {
         fail(CHECK, rule.name + ' 两端不一致：宿主 "' + h[1] + '" vs 客户端 "' + c[1] + '"',
@@ -143,7 +143,7 @@ function bytes(text) {
      */
     function viewFields(keyLiteral, fields) {
       const at = host.indexOf('key: ' + keyLiteral)
-      if (at < 0) { fail(CHECK, '找不到投影 ' + keyLiteral + ' 的定义', '确认 lib/host-v19.js 里该投影仍存在。'); return }
+      if (at < 0) { fail(CHECK, '找不到投影 ' + keyLiteral + ' 的定义', '确认 lib/host-v20.js 里该投影仍存在。'); return }
       const seg = host.slice(at, at + 6000)
       const wireAt = seg.indexOf('wire:')
       if (wireAt >= 0) {

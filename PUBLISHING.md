@@ -101,7 +101,7 @@ peer 版本必须与目标 DSH 完全一致（例如运行时是 `0.2.0-rc.2`，
 ```yaml
 - insert:
     - id: sym-cost
-      name: '/绝对路径/dsh-sym/lib/host-v19.js'
+      name: '/绝对路径/dsh-sym/lib/host-v20.js'
 ```
 
 ⚠ **id 必须与包内 `cordis.patch.yml` 一致（都是 `sym-cost`）**。写成别的 id 会变成"两条

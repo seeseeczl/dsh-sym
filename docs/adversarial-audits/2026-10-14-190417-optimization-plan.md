@@ -9,7 +9,7 @@
 ## 范围
 
 - `lib/client.js`：`ExportSessionMenuItem`、`installSessionMenu`
-- `lib/host-v19.js`：`contextLossProjection`（仅 AA-DATA-001、AA-CODE-001 涉及）
+- `lib/host-v20.js`：`contextLossProjection`（仅 AA-DATA-001、AA-CODE-001 涉及）
 - `test/client.test.mjs`：补真实覆盖
 - `.project-architect.json` / `AGENTS.md`：契约同步（若采纳 AA-CODE-001 的移除方案）
 
@@ -103,7 +103,7 @@
 - **来源**：AA-CODE-001（P3）
 - **两个方案**（择一，需产品决策）：
   - **展示**：`ContextLossPill` 在 `lastFailed === true` 时用 error 色并在悬停里说明"上次压缩失败" —— 这是有真实价值的告警。
-  - **移除**：删字段 + 改 `host-v19.js` 折叠与 view + 改 `.project-architect.json` 的 `contracts.contextLossProjection` + 改 `check-invariants.mjs` 的字段守卫。
+  - **移除**：删字段 + 改 `host-v20.js` 折叠与 view + 改 `.project-architect.json` 的 `contracts.contextLossProjection` + 改 `check-invariants.mjs` 的字段守卫。
 - **验收**：契约、实现、守卫、文档四处一致，无死字段。
 
 ---

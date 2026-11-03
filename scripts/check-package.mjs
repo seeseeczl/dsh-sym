@@ -22,7 +22,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const REQUIRED = [
   'package.json',          // 加载器据此找入口与 patch
   'cordis.patch.yml',      // 包形态的装配补丁
-  'lib/host-v19.js',       // 宿主入口（`exports["."]`）
+  'lib/host-v20.js',       // 宿主入口（`exports["."]`）
   'lib/client.js',         // 客户端半边（`exports["./client"]`）
   'lib/prices.json',       // 价目来源之一
   'README.md',

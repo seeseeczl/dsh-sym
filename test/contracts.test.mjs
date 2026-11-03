@@ -5,7 +5,7 @@ import {
   PROJECTION_KEY, QUOTE_MARK_PREFIX, QUOTE_MARK_ID_LENGTH, QUICK_ACTIONS_KEY,
   DEFAULT_QUICK_ACTIONS, sessionCostProjection, rememberProse, expandQuoteMarks,
   GIT_STATUS_ROUTE, CONTEXT_LOSS_KEY,
-} from '../lib/host-v19.js'
+} from '../lib/host-v20.js'
 import { loadClient } from './helpers/load-client.mjs'
 
 /**

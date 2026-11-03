@@ -11,15 +11,15 @@
   "modules": [
     {
       "id": "M-HOST",
-      "path": "lib/host-v19.js",
+      "path": "lib/host-v20.js",
       "kind": "host",
-      "role": "投影折叠（计费 + 上下文损耗）、三级价目来源、引用展开、进程内存读数、Git 读数路由（读 + 只切分支）",
+      "role": "投影折叠（计费 + 上下文损耗）、三级价目来源、引用展开、进程内存读数、Git 路由（读数 + 切分支 + 提交记录 + 重置/回滚/中止回滚）",
       "publicContract": [
         "sessionCost projection (stateVersion 3)",
         "contextLoss projection (stateVersion 1, CR-0004)",
         "readProcessMemory()",
-        "GET|POST /api/sym.git (CR-0001 + CR-0002)",
-        "parseGitStatus / parseBranches / parseNumstatTotals / createGitStatusReader / gitStatusRoute"
+        "GET|POST /api/sym.git (CR-0001 + CR-0002 + CR-0007)",
+        "parseGitStatus / parseBranches / parseNumstatTotals / parseGitLog / createGitStatusReader / gitStatusRoute"
       ],
       "changeCost": "high",
       "changeProcedure": "停用插件 → 换新文件名 → 同步全部引用 → 启用。换名与同步引用走 scripts/reload-host.mjs（默认 dry-run，--apply 才写盘；历史审计产物不改写）；停用/启用与重启必须人工完成。直接改内容或只改文件名都会因宿主模块缓存而不生效。"
@@ -28,7 +28,7 @@
       "id": "M-CLIENT",
       "path": "lib/client.js",
       "kind": "client",
-      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单、会话头部 Git 胶囊（读数 + 分支切换菜单）、侧栏会话菜单（复制会话 ID / 导出会话日志）",
+      "role": "四处显示（花费/每轮费用/余额/峰谷标记）、花费面板、链接右键菜单、会话头部 Git 胶囊（读数 + 分支切换菜单）、侧栏会话菜单（导出会话日志）、对话视图「提交记录」（列表 + 重置/回滚/中止回滚）",
       "publicContract": [
         "data-sym-cost-part",
         "data-sym-turn-cost",
@@ -44,9 +44,13 @@
         "data-git-status",
         "data-git-branches",
         "data-git-picker",
-        "slot sidebar.workspaces.session.menu.item#sym-copy-session-id (order 900)",
         "slot sidebar.workspaces.session.menu.item#sym-export-session (order 901, 条件注册：依赖官方客户端服务 sessionLogDownload)",
-        "data-sym-context-loss"
+        "data-sym-context-loss",
+        "data-log-view",
+        "data-log-commit",
+        "data-log-more",
+        "data-log-menu",
+        "data-log-confirm"
       ],
       "changeCost": "low",
       "changeProcedure": "保存即热更新，无需重启。"
@@ -89,18 +93,18 @@
     "$comment": "净新增阈值为任务卡约束：单卡至多 5 个生产文件、净新增至多 300 行。此处记录当前基线，用于判断增长是否异常。",
     "baselineAt": "2026-10-13",
     "byModule": {
-      "M-HOST": 1546,
-      "M-CLIENT": 3649
+      "M-HOST": 2022,
+      "M-CLIENT": 4008
     },
-    "productionTotal": 5195,
+    "productionTotal": 6030,
     "taskLimits": {
       "maxProductionFilesPerTask": 5,
       "maxNetAddedProductionLinesPerTask": 300
     },
     "hardCeiling": {
-      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。客户端半边不能拆文件（file:// 挂载没有 bundle URL，require.async 解析不了 chunk），M-CLIENT 的余量只能靠就地压缩或由 CR 调整阈值维持：CR-0001 把 3000 提到 3300，CR-0002 评审整改实到 3274（仅剩 26 行），故再提到 3400；CR-0003 实到 3649（改动前 3310 只剩 90 行余量，已三轮就地压缩 383→339 仍触顶），故提到 3700。CR-0005 曾因「聊天」标签（conversation.view 第三个视图 + webview guest 租约承载）实到 3786 而把 3700 提到 3800。该内嵌功能同年**已撤除**（三条平台级制约：站点风控 / 登录态不跨 App 重启 / webview 语言锁死 en-US），标签保留为**占位**（`sym-view`，正文一句「这个区域待建设」）。撤除后 `lib/client.js` 回落到 3634，**低于原阈值 3700**，3800 只是余量。 ⚠ 撤除后余量充裕（3634 / 3800）—— 但仍优先就地压缩；若压缩不足，评估把客户端半边改成走 HTTP bundle 服务的包安装形态以支持拆文件。",
-      "M-HOST": 1800,
-      "M-CLIENT": 3800
+      "$comment": "任一模块超过此上限时必须先拆分，不得继续堆叠。客户端半边不能拆文件（file:// 挂载没有 bundle URL，require.async 解析不了 chunk），M-CLIENT 的余量只能靠就地压缩或由 CR 调整阈值维持：CR-0001 把 3000 提到 3300，CR-0002 评审整改实到 3274（仅剩 26 行），故再提到 3400；CR-0003 实到 3649（改动前 3310 只剩 90 行余量，已三轮就地压缩 383→339 仍触顶），故提到 3700。CR-0005 曾因「聊天」标签（conversation.view 第三个视图 + webview guest 租约承载）实到 3786 而把 3700 提到 3800。该内嵌功能同年**已撤除**（三条平台级制约：站点风控 / 登录态不跨 App 重启 / webview 语言锁死 en-US），标签保留为**占位**（`sym-view`，正文一句「这个区域待建设」）。撤除后 `lib/client.js` 回落到 3634，**低于原阈值 3700**，3800 只是余量。 ⚠ 撤除后余量充裕（3634 / 3800）—— 但仍优先就地压缩；若压缩不足，评估把客户端半边改成走 HTTP bundle 服务的包安装形态以支持拆文件。 CR-0007 新增「提交记录」视图（列表 + 分页 + 重置/回滚/中止回滚 + 确认框）与宿主三种新的 git 动作，M-HOST 实到 2016、M-CLIENT 实到 4036，故分别提到 2100 / 4100（实测值 + 少量余量）。客户端半边仍不能拆文件，后续增长优先就地压缩。 CR-0007 后续修订：用户要求列宽可拖拽（两根 12px 手柄列 + 本机持久化），M-CLIENT 实到 4100，已贴死 4100 上限、余量为 0；零余量会让下一次任何小改都被迫草率压缩，故提到 4150。",
+      "M-HOST": 2100,
+      "M-CLIENT": 4150
     }
   },
   "contracts": {
@@ -145,23 +149,13 @@
     },
     "gitStatusRoute": {
       "$comment": "CR-0001。本插件第一条非投影的宿主↔客户端契约；官方同类通道见 dsh-client-ui-deliverables 的 /api/changes.summary。",
-      "route": "GET /api/sym.git?sessionId=<SessionId> | POST /api/sym.git { sessionId, branch }（sessionId 也可放查询串）",
+      "route": "GET /api/sym.git?sessionId=…（读数） | GET /api/sym.git?kind=log&limit&skip&sessionId=…（提交记录） | POST /api/sym.git { sessionId, branch }（切分支） | POST /api/sym.git { sessionId, action: reset|revert|revert-abort, commit?, mode? }（历史写）",
       "constant": "GIT_STATUS_ROUTE（两端各一份，test/contracts.test.mjs 守卫）",
       "fields": [
-        "root",
-        "branches[]:{name,current}",
-        "branch",
-        "detached",
-        "head",
-        "upstream",
-        "ahead",
-        "behind",
-        "files",
-        "added",
-        "deleted",
-        "untracked"
+        "读数：root / branches[]:{name,current} / branch / detached / head / upstream / ahead / behind / files / added / deleted / untracked",
+        "提交记录：commits[]:{hash,short,author,at,subject} / hasMore / limit / skip / revert:{commit,short}|null / dirty（已跟踪文件的未提交改动数，供 --hard 说清会丢多少；`git reset --hard` 不碰未跟踪文件，故 untracked 不计）"
       ],
-      "rule": "读 + **只切分支**（CR-0002）：GET 读数（200/400/404），POST 先与本地分支白名单比对再用 argv 执行 `git switch -- <branch>`（无 switch 的老 git 回退 `git checkout <branch>`），状态码 200 / 400 / 404 / 409（git 拒绝）/ 413（body 过大）；**写操作不复用请求 signal**（浏览器断连不得打断切换）；每次 GET 现读 git：status + diff 并行，toplevel 按目录只读一次、分支清单 4s 内复用，故稳态每轮 2 条命令（~40ms）；读缓存按 cwd 0.7s 合流多实例，切换后失效并让在飞的那次读失效。客户端 2s 轮询 + 失败快速重试 + 轮次结束立刻重读。不 add/commit/push、不用 -f/--discard-changes/stash/reset、不取 remote、不调托管平台 API、不碰凭据、不做 PR 链接。破坏性变更需 CR。"
+      "rule": "读 + **只切分支**（CR-0002）：GET 读数（200/400/404），POST 先与本地分支白名单比对再用 argv 执行 `git switch -- <branch>`（无 switch 的老 git 回退 `git checkout <branch>`），状态码 200 / 400 / 404 / 409（git 拒绝）/ 413（body 过大）；**写操作不复用请求 signal**（浏览器断连不得打断切换）；每次 GET 现读 git：status + diff 并行，toplevel 按目录只读一次、分支清单 4s 内复用，故稳态每轮 2 条命令（~40ms）；读缓存按 cwd 0.7s 合流多实例，切换后失效并让在飞的那次读失效。客户端 2s 轮询 + 失败快速重试 + 轮次结束立刻重读。不 add/commit/push、不用 -f/--discard-changes/stash/reset、不取 remote、不调托管平台 API、不碰凭据、不做 PR 链接。破坏性变更需 CR。 CR-0007 扩展：GET `kind=log` 分页读提交（一页 N+1 条判断 hasMore，格式串由宿主写死，记录以 `%x00` 分隔）；POST 的 `action` 决定写操作 —— `reset` 的 mode 是封闭枚举 soft/mixed/keep/**hard**（2026-11-03 用户明确要求 hard：\"回滚 = 丢失后面的修改\"；它只由带破坏性确认的图标按钮触发，宿主本身不做额外限制）、`revert` 用 `--no-edit` 生成反向提交（历史不改写）、`revert-abort` 收拾冲突留下的半个回滚。提交 id 必须先用 `git rev-parse --verify <id>^{commit}` 解析成完整哈希再交给写命令，参数一律 argv + 尾随 `--`。冲突是真实可达的结果，返回 409 + `code:'conflict'` + 挡路文件清单，绝不假装成功。**仍然不 add/commit/push、不取 remote、不调托管平台 API、不碰凭据、不做 PR 链接、不硬重置。** 破坏性变更需 CR。"
     },
     "contextLossProjection": {
       "$comment": "CR-0004。上下文压缩统计：客户端拿不到 compaction/* 与 compaction/prune 事件（无现成投影暴露），故由宿主折叠。",

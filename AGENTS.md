@@ -91,7 +91,7 @@
 对下面这些接口**连续误判 6 次**——因为契约此前只存在于实现里。**签名与返回契约以实现为准，
 本节是它的可读副本；发现不一致时先改本节。**
 
-### `lib/host-v19.js`
+### `lib/host-v20.js`
 
 ```js
 isPeakTime(ms, holidays = new Set(DEFAULT_HOLIDAYS)) -> boolean
@@ -133,15 +133,43 @@ parseBranches(stdout) -> [{ name, current }]
     // 入参是 `git for-each-ref --sort=-committerdate --format=%(refname:short)%09%(HEAD) refs/heads`。
     // **当前分支排最前**，其余保持 git 的近因序。
 
-createGitStatusReader(ctx) -> { read(cwd, signal), switchBranch(cwd, branch, signal) }   // 需要 ctx.subprocess
+parseGitLog(stdout, limit) -> { commits:[{hash,short,author,at,subject}], hasMore }
+    // 入参是 `git log --format=%H%x09%h%x09%an%x09%at%x09%s%x00 HEAD --` 的 stdout。
+    // ⚠ **记录分隔是 `<NUL><换行>`**：`%x00` 之后 git 会另起一行，所以 split 出来的每段
+    //    都带一个前导 \n，**必须剥掉**再校验 `%H` —— 否则每个提交都被判成坏行，
+    //    界面表现是"列表永远为空"且不报错（2026-11-03 真机踩到，已有回归守卫）。
+    // ⚠ 主题排在**最后一列**：它是唯一自由文本，含制表符时不会挤掉前面的列。
+    // 哈希不合法的行丢弃；时间戳解析不了时 `at` 是 null（不编 1970）。
+
+createGitStatusReader(ctx) -> {
+    read(cwd, signal),          // 头部胶囊读数
+    switchBranch(cwd, branch, signal),
+    log(cwd, limit, skip, signal),                    // CR-0007
+    reset(cwd, commit, mode, signal),                 // CR-0007
+    revert(cwd, commit, signal),                      // CR-0007
+    revertState(git, cwd, signal),                    // CR-0007
+    abortRevert(cwd, signal),                         // CR-0007
+  }   // 需要 ctx.subprocess
     // read 解析 `{root,branches,branch,detached,head,upstream,ahead,behind,files,added,deleted,untracked}`；
     // 不是 git 仓库 / 没有可用 git 时返回 null。
     // 同一 cwd 0.7s 内复用，并发合流；status 与 diff 并行，toplevel 只读一次、分支清单 4s 内复用；
     // 单次稳态读数 ≈2 条 git 命令 ~40ms。git 命令带超时、输出上限与清洗过的环境。
-    // ⚠ switchBranch 是**本插件唯一的写操作**（CR-0002）：先与本地分支清单白名单比对，
-    //    再用 argv 执行 `git switch -- <branch>`；不用 -f / --discard-changes / stash / reset，
-    //    git 拒绝时把 stderr 首行原样回传（`{ok:false, code:'refused', message}`），
-    //    成功后失效该 cwd 的读缓存并回一份新读数。
+    // ⚠ 写操作（CR-0002 的 switch + CR-0007 的 reset/revert/abort）一律：argv + 尾随 `--`，
+    //    用**自己的 30s 超时 signal**（不复用请求的 signal —— 页面导航不得打断 git 写），
+    //    提交 id 先经 `git rev-parse --verify <id>^{commit}` 解析成完整哈希。
+    //    git 拒绝时把 stderr 首行（冲突时是 CONFLICT 那行）原样回传。
+    // ⚠ **reset 的 mode 是封闭枚举 soft / mixed / keep / hard**（枚举外一律在跑 git 之前拒绝）。
+    //    `hard` 自 2026-11-03 起是**用户明确要求**的能力（"回滚 = 丢失后面的修改，恢复到某个备份点"），
+    //    早先"永不 --hard"的立场已作废。它丢弃目标之后的提交**与**所有未提交改动，
+    //    所以界面必须：危险色 + 破坏性确认 + 说出会丢几个文件（靠 `log` 的 `dirty`）。
+    //    宿主本身不做额外限制，只按传入的 mode 执行。
+    //    `revert` 用 `--no-edit`（无终端）；冲突后 git 停在 **REVERT_HEAD**（不是
+    //    CHERRY_PICK_HEAD），`revertState` 两个 ref 都查，`abortRevert` 才能把状态解开。
+    // ⚠ `log` 的 `dirty` 是**已跟踪文件的未提交改动数**（`git reset --hard` 会丢弃它们；
+    //    `parseGitStatus().files` 本身就是计数，**不是数组**，别取 `.length` —— 会得到 undefined）。
+    //    未跟踪文件不计：--hard 不碰它们。界面靠它把破坏性确认说成"会丢 3 个文件"。
+    // ⚠ log 的 `limit` 夹在 [1,200]、`skip` 负数按 0；多读一条判断 `hasMore`；不缓存
+    //    （历史只在提交时变，一页旧数据比多起一个进程更糟）。
 ```
 
 ### `lib/client.js`
@@ -155,6 +183,19 @@ quoteMark(messageId) -> string             // 客户端写出的引用标记（�
 describeGitStatus(data, t) -> { branch, branches, files, hasTotals, added, deleted, untracked, title }
     // 宿主载荷 → 胶囊要画的字段；纯函数，单测覆盖（分支清单过滤、detached 回退、千位分隔）。
     // 组件 GitStatusCell 只用它；`data-git-branches` 只有分支数 > 1 时才出现在按钮上。
+describeCommitLog(page) -> { commits, hasMore, branch, detached, head, revert }
+    // CR-0007。`GET /api/sym.git?kind=log` 的载荷 → 提交记录表要画的字段。
+    // 没有提交号的行**整行丢弃**；作者为空给 `(unknown)`；时间不可得是 null。
+    // `revert` 非 null 表示仓库停在半个回滚里 —— 界面据此给「中止这次回滚」入口。
+formatCommitTime(at) -> string      // 本地时间 `YYYY-MM-DD HH:mm`；null/NaN 给空串
+sessionIdOf(node) -> string | null
+    // ⚠ `conversation.view` **不投影 sessionId**（只有 inspectCall / viewRequest /
+    //    openView / completeViewRequest）。这里沿 parentElement 找官方的
+    //    `[data-conversation-session]` —— 按祖先收窄，不要 querySelector 取文档第一份
+    //    （右侧栏聊天标签与子代理面板各有一份会话）。
+CommitLogView(props) -> element
+    // 「提交记录」视图正文（`conversation.view` 的 sym-view，order 20）。
+    // ⚠ 所有 hook 必须排在**任何 return 之前**（槽组件老坑）。
 registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
     // ⚠ 同一实例内重复 id 会被**跳过并返回 null**（AUD-OPS-001 的整改）。
     // ⚠ 注册表拒绝时吞掉异常、记录一条降级日志，返回 null——不连累其他插槽。
@@ -162,23 +203,19 @@ registerSlotCell(ctx, name, id, order, component, extra?) -> disposer | null
     //    它是"要不要给条目注入 `t`"的开关，**不控制渲染** —— 见下面「槽的 locale 声明」。
 
 installSessionMenu(ctx) -> void
-    // 侧栏会话「⋯」菜单的两项。槽是 list 型，**纯加法**（官方四项 100/200/300/400 不动）：
-    //   `sym-copy-session-id` (order 900，带 `separatorBefore` → 自带官方发丝分隔线)
-    //   `sym-export-session`  (order 901)
-    // ⚠ 导出项写在 `ctx.inject(["sessionLogDownload"], …)` 里：**服务拿不到就根本不注册**，
-    //    不是"注册一个渲染 null 的空条目"（那会在菜单里留一条看不见的空行）。
-    // ⚠ 两项的槽组件都以 `slotProps.sessionId` 为准；文案走 `tr(props.t, …)`。
+    // 侧栏会话「⋯」菜单的一行。槽是 list 型，**纯加法**（官方五项 100/200/300/400/450 不动）：
+    //   `sym-export-session` (order 901，带 `separatorBefore` → 与官方五项之间画官方发丝分隔线)
+    // ⚠ 导出项**无条件注册**；功能**不依赖**官方 `sessionLogDownload` 客户端服务
+    //    （本部署里拿不到），而是直连它背后的宿主路由 `/api/session.export`。
+    //    第一版写进 `ctx.inject(["sessionLogDownload"], …)`，结果 `ctx.inject` 的回调在这个部署里
+    //    根本没进，菜单**一行都不出现且没有任何报错**。
+    // ⚠ 官方 0.2.1-rc.2 起在同一个槽里自带 `session-id`(order 450)「复制 Session ID」，带成功/失败 toast；
+    //    本插件原来的 `sym-copy-session-id`(900) 已下架（CR-0006）。**不要加回来** —— 会变成两条同义项。
 
-copyPlainText(primitives, text) -> Promise<boolean>
-    // 官方 `writeClipboard` 优先（它把失败折成 `false`），否则回落裸 `navigator.clipboard.writeText`
-    // （它用 reject 表示失败，这里也折成 `false`）。两条路径统一成一个布尔值。
-
-CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
-    // props：`{ sessionId, useMenuOpenState, t }`，导出项另加 `{ useSessionLogDownload, request }`。
+ExportSessionMenuItem(props) -> element | null
+    // props：`{ sessionId, useMenuOpenState, t }`。
     // ⚠ **所有 hook 必须在任何 return 之前** —— 槽组件的老坑（见下面「槽组件里所有 hook…」）。
-    // ⚠ 两者都在 primitives（`MenuItemButton`）缺失时返回 null。
-    // ⚠ 复制项：**成功才关菜单**；失败时保持菜单打开并把文案换成 `copySessionIdFailed` ——
-    //    关掉菜单会让"点了但剪贴板是空的"变成静默欺骗。
+    // ⚠ primitives（`MenuItemButton`）缺失时返回 null。
 ```
 
 ### 降级日志（`noteDegrade`）
@@ -233,7 +270,7 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
 
 | 常量 | 宿主 | 客户端 |
 |---|---|---|
-| `PROJECTION_KEY` | `lib/host-v19.js` 顶部 | `lib/client.js` 的 contract 区 |
+| `PROJECTION_KEY` | `lib/host-v20.js` 顶部 | `lib/client.js` 的 contract 区 |
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
 | `QUICK_ACTIONS_KEY` | 同上 | 同上 |
 | `GIT_STATUS_ROUTE` | 同上 | 同上 |
@@ -321,14 +358,14 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
     缓存钉住**，把包内文件换成新内容、甚至改 `package.json` 的 `main` 到新文件名都不生效
     （与下面「宿主代码不热重载」同源，只是换文件名的招数在包形态下失效）。
   - 想在**不重启 App**的前提下用工作副本，现在可行的做法：给 profile patch 追加一条**新 id 的
-    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v19.js`），
+    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v20.js`），
     `set_plugin` 打开它、并把 `include:sym-cost` 关掉。**必须关掉包安装那条**：两条都提供
     `dsh-sym` 时，客户端模块图按包名去重，只会发出包安装那份 `client.js`（宿主新、客户端旧）。
   - 长期方案：把 profile 依赖改成 `link:`/`file:` 指向工作副本，或重建 `file://` 挂载 —— 两者都
     需要一次 App 重启。
 - **`file://` 挂载 ≠ 不是插件**（2026-10-01 查 asar 证实）：loader 里有 `nearestPackage()`
   （asar 偏移 18777873），拿到 `file://` 入口后会**向上找最近的 `package.json`** 当包根。
-  所以 `file:///…/lib/host-v19.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
+  所以 `file:///…/lib/host-v20.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
   `exports["./client"]` + `dsh.client` 解析 —— 与包安装的**唯一**差别是入口由绝对路径给出，
   而不是由 profile 的 `node_modules` 解析。
   选它是为了开发期的迭代速度：改 `lib/client.js` 刷新即生效、改 `prices.json` 即时生效、
@@ -375,7 +412,7 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
   `pnpm update dsh-sym` 把包从 1.5.0 换成 1.6.0 后，`lib/host-v13.js`（boot 时记录的入口）已不存在，
   于是 `set_plugin include:sym-cost true` 直接报 `sym-cost (dsh-sym): failed to import`。
   **不改代码、不重启的解法**：在安装好的包里把旧入口路径补成一个一行再导出
-  （`lib/host-v13.js` → `export * from './host-v19.js'`），再"停用 → 启用"即可；
+  （`lib/host-v13.js` → `export * from './host-v20.js'`），再"停用 → 启用"即可；
   本机 profile 的 `node_modules/dsh-sym` 里现在就有这么一份 shim（**它不属于发布产物**，
   下次 `pnpm install` 会被清掉，清掉后要重启 App 才能重新装配这个 entry）。
   → 结论：**换包 + 不重启 App** 是有条件的；干净做法仍然是重启。
@@ -394,18 +431,26 @@ CopySessionIdMenuItem / ExportSessionMenuItem(props) -> element | null
 
 1. **官方日志导出早就有**，入口在**会话头部**的「更多操作 → 下载 Session 日志」
    （`@deepseek-ai/dsh-session-log-export`），**不在**侧栏会话列表的「⋯」菜单里 ——
-   所以用户会觉得"没有导出菜单"。想加第二入口**不要自己调 `/api/session.export`**：
-   那个包的浏览器半边把自己 `ctx.provide("sessionLogDownload", controller)` 成了客户端服务，
-   直接 `controller.download(sessionId)` 即可，端点 / HEAD 预检 / 进度弹窗 / 每会话并发折叠
-   全都是它的。
+   所以用户会觉得"没有导出菜单"。
+   - 官方那个包确实 `ctx.provide("sessionLogDownload", controller)` 了，**但本部署里拿不到**
+     （见下面"不要写成条件注册"）。
+   - 实际可用的是它背后的**宿主路由** `GET|HEAD /api/session.export?sessionId=…`：
+     本插件先 `HEAD` 预检（401/404/500 会显示成失败，不谎报），再 `<a download>` 触发同源下载，
+     文件名自己给 `dsh-session-<id>.zip`（与官方 `sessionLogZipFilename` 一致）。
+   - ⚠ 代价：**没有**官方那个进度弹窗 —— 反馈只有菜单行的「正在导出…」。
 2. **侧栏会话「⋯」菜单是 `list` 型槽**：`sidebar.workspaces.session.menu.item`，
    官方标注 `replaceRisk: none`；渲染传 `{ sessionId, displayTitle }`，注入
-   `{ hooks: { menuOpenState, shortcuts } }`。官方四项是 pin(100) / rename(200) /
-   fork(300) / archive(400)，本项目加 900/901。
+   `{ hooks: { menuOpenState, shortcuts } }`。官方**五项**是 pin(100) / rename(200) /
+   fork(300) / archive(400) / session-id(450，「复制 Session ID」)，本项目只加导出(901)。
+   - **「复制会话 ID」由官方内置，别再自己加**（2026-10-20 查 asar，`0.2.1-rc.2`）：
+     官方 `SessionIdMenuItem` 复制裸 ID、关菜单、用 `writeClipboard` 的成功/失败发 toast。
+     本插件原来的 `sym-copy-session-id`(900) 因此下架（CR-0006）—— 两行都注册会出现两条同义项。
    - 菜单行**必须复用官方 `MenuItemButton`**，它自带 `separatorBefore`（官方发丝分隔线），
      自画 `<button role="menuitem">` 虽然也能被键盘走查收集，但会丢掉官方单元格的形制。
-   - 服务类依赖要写成**条件注册**（`ctx.inject` 里再 `slots.inject`），不要"注册一个永远
-     渲染 null 的空条目" —— 那会在菜单里留一条看不见的空行。
+   - ⚠ **不要写成条件注册**：第一版把导出行写进
+     `ctx.inject(["sessionLogDownload"], …)`，结果 `ctx.inject` 的回调在这个部署里根本没进，
+     菜单**一行都不出现且没有任何报错**。正确做法是**无条件注册**，且功能**不依赖那个客户端服务**，
+     改为直连宿主路由（见上一条）。
    - ⚠ `MenuItemButton` **不透传未知 props**（只解构 7 个已知项），所以给它传
      `data-sym-*` 是无效的死代码，别指望能在 DOM 上定位到。
 

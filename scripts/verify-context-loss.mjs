@@ -22,7 +22,7 @@ const KEY = 'contextLoss'
 const CACHE = join(homedir(), '.dsh', 'storages', 'session_projcache', 'sessions')
 const verbose = process.argv.includes('--verbose')
 
-/** 投影 view 应有的字段（与 `lib/host-v19.js` 的 wire.view 一致）。 */
+/** 投影 view 应有的字段（与 `lib/host-v20.js` 的 wire.view 一致）。 */
 const EXPECTED = ['compactions', 'prunes', 'lostTokens', 'lastTurn']
 
 let files

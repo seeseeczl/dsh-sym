@@ -690,12 +690,13 @@ test('渲染冒烟：createBalanceCell 是个工厂，能在没有 remote 时降
   assert.ok(cell === null || typeof cell === 'function', '工厂应返回组件或 null')
 })
 
-test('渲染冒烟：会话菜单两项在 primitives 缺失时返回 null（不抛错）', () => {
-  // 这两项复用官方 `MenuItemButton`；官方 primitives 拿不到时必须安静退场，
+test('渲染冒烟：会话菜单的导出行在 primitives 缺失时返回 null（不抛错）', () => {
+  // 这一项复用官方 `MenuItemButton`；官方 primitives 拿不到时必须安静退场，
   // 而不是注册一条看不见的空行（见 AGENTS.md「侧栏会话「⋯」菜单可加」）。
+  // 复制会话 ID 已由官方内置（order 450），本插件的那一行已下架（CR-0006）。
   const client = loadClient()
   const t = (key) => key
-  for (const name of ['CopySessionIdMenuItem', 'ExportSessionMenuItem']) {
+  for (const name of ['ExportSessionMenuItem']) {
     const view = client[name]
     assert.equal(typeof view, 'function', name + ' 应已导出')
     let result
@@ -724,29 +725,196 @@ test('渲染冒烟：GitStatusCell 在无会话时安静退场', () => {
   assert.ok(result === null || typeof result === 'object', '应返回元素或 null')
 })
 
-//#region 视图环占位（conversation.view）—— 2026-10-15
+//#region 视图环「提交记录」（conversation.view · CR-0007）
+// 2026-11-03 起这个标签不再是占位：正文是当前分支的 git log 表，
+// 并且可以从这里「重置到某笔提交」/「回滚某笔提交」。
 
-test('占位视图：注册在 conversation.view、order 排在官方 trajectory 之后、label 是 thunk', () => {
-  // 标签本体保留（以后改成别的功能区域的挂点）—— 这是"纯加法"的守卫：
-  // order 必须 > 10（官方 trajectory），id 不与官方 chat 相撞，label 必须能跟随界面语言。
+test('提交记录：注册在 conversation.view、order 排在官方 trajectory 之后、label 是 thunk', () => {
+  // 纯加法：order 必须 > 10（官方 trajectory），id 不与官方 chat 相撞，
+  // label 必须是 thunk 才能跟随界面语言。
   const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   assert.match(src, /"conversation\.view",\s*"sym-view",\s*20/, '应注册为 conversation.view 的 sym-view，order 20')
   assert.match(src, /label:\s*\(\)\s*=>\s*localeLabel\(ctx,\s*"symViewTab"\)/, 'label 必须是 thunk，才能跟随界面语言')
 })
 
-test('占位视图：组件能渲染且不抛错（无 hook、无副作用）', () => {
+test('提交记录：标签名是「提交记录」，不再是「工作区」', () => {
   const client = loadClient()
-  assert.equal(typeof client.SymViewPlaceholder, 'function', '占位组件应已导出')
-  let result
-  try {
-    result = client.SymViewPlaceholder({ t: (key) => key })
-  } catch (error) {
-    assert.fail('占位组件不该抛错：' + String(error?.message ?? error))
-  }
-  assert.ok(result !== null && typeof result === 'object', '应返回元素')
+  assert.equal(client.zh.symViewTab, '提交记录')
+  assert.equal(client.en.symViewTab, 'Commits')
+  // 中英字典的键必须一一对应：漏一个键就会在英文界面下显示中文（或反过来）。
+  assert.deepEqual(Object.keys(client.en).sort(), Object.keys(client.zh).sort())
 })
 
-test('占位视图：内嵌聊天已撤除（不再有 webview / 租约 / 站点地址的代码残留）', () => {
+test('提交记录：describeCommitLog 只保留画得出来的行，缺数据不编造', () => {
+  const client = loadClient()
+  const model = client.describeCommitLog({
+    branch: 'main',
+    detached: false,
+    head: 'abcdef1',
+    hasMore: true,
+    commits: [
+      { hash: 'abcdef1234567890', short: 'abcdef1', subject: 'feat: 一条提交', author: '张三', at: 1700000000 },
+      { hash: 'fedcba9876543210', subject: '', author: '', at: null },
+      { subject: '没有哈希也没有短号' },
+      null,
+      'not-an-object',
+    ],
+  })
+  assert.equal(model.commits.length, 2, '没有提交号的行整行丢弃（既看不了详情也跳不过去）')
+  assert.equal(model.commits[0].short, 'abcdef1')
+  assert.equal(model.commits[0].subject, 'feat: 一条提交')
+  assert.equal(model.commits[1].short, 'fedcba9', '缺 short 时用完整哈希截 7 位')
+  assert.equal(model.commits[1].subject, '(no message)', '空描述给明确占位，不留空行')
+  assert.equal(model.commits[1].author, '(unknown)')
+  assert.equal(model.commits[1].at, null, '时间不可得就是 null，不编 1970')
+  assert.equal(model.hasMore, true)
+  assert.equal(model.branch, 'main')
+})
+
+test('提交记录：describeCommitLog 对空/坏载荷返回空表而不是抛错', () => {
+  const client = loadClient()
+  for (const bad of [null, undefined, {}, { commits: 'nope' }]) {
+    const model = client.describeCommitLog(bad)
+    assert.deepEqual(model.commits, [])
+    assert.equal(model.hasMore, false)
+    assert.equal(model.branch, null)
+  }
+})
+
+test('提交记录：formatCommitTime 同年省略年份，跨年才给完整日期', () => {
+  // 列宽只有 104px，`2026-10-16 12:43`（19 字符）太长；今年省掉年份后是 11 字符。
+  const client = loadClient()
+  // 用本地时间构造器生成期望值，避免断言依赖运行机器的时区。
+  const stamp = new Date(2026, 9, 16, 9, 5).getTime() / 1000
+  const old = new Date(2025, 11, 3, 18, 30).getTime() / 1000
+  const thisYear = new Date(2026, 9, 20, 10, 0)
+  const nextYear = new Date(2027, 0, 5, 10, 0)
+
+  assert.equal(client.formatCommitTime(stamp, thisYear), '10-16 09:05', '今年：月-日 时:分')
+  assert.equal(client.formatCommitTime(stamp, nextYear), '2026-10-16', '往年：完整日期，省掉时分')
+  assert.equal(client.formatCommitTime(old, thisYear), '2025-12-03', '去年：带年份')
+  assert.ok(client.formatCommitTime(stamp, thisYear).length <= 11, '不超过 11 字符')
+
+  for (const bad of [null, undefined, Number.NaN, Infinity]) {
+    assert.equal(client.formatCommitTime(bad, thisYear), '', String(bad) + ' 应给空串')
+  }
+})
+
+test('提交记录：sessionIdOf 只认祖先上的 data-conversation-session', () => {
+  // 这个槽**不投影 sessionId**，只能从官方外层的 `[data-conversation-session]` 读；
+  // 按祖先收窄（而不是 querySelector 全文档第一份）是多实例安全的唯一写法。
+  const client = loadClient()
+  const make = (attrs, parent) => ({ getAttribute: (name) => (name in attrs ? attrs[name] : null), parentElement: parent ?? null })
+  assert.equal(client.sessionIdOf(make({ 'data-conversation-session': 's-1' })), 's-1')
+  assert.equal(client.sessionIdOf(make({}, make({ 'data-conversation-session': 's-2' }))), 's-2', '往上找祖先')
+  assert.equal(client.sessionIdOf(make({})), null, '找不到就是 null，不猜')
+  assert.equal(client.sessionIdOf(null), null)
+})
+
+test('提交记录：repoName 取路径最后一段，空值不编造', () => {
+  // 顶部条把仓库名显示出来 —— 2026-11-03 真机调试时，缺这一条导致
+  // "0 条"到底读的是哪个目录无法判断。
+  const client = loadClient()
+  assert.equal(client.repoName('/Users/long/GitHub/DSH-Sym'), 'DSH-Sym')
+  assert.equal(client.repoName('/a/b/c/'), 'c', '尾部斜杠忽略')
+  assert.equal(client.repoName('C:\\work\\repo'), 'repo', 'Windows 反斜杠')
+  assert.equal(client.repoName(''), '')
+  assert.equal(client.repoName(null), '')
+})
+
+test('提交记录：载荷里的 root 要透传到模型（顶部条据此显示仓库名）', () => {
+  const client = loadClient()
+  const model = client.describeCommitLog({ branch: 'main', root: '/Users/long/GitHub/DSH-Sym', commits: [], hasMore: false })
+  assert.equal(model.root, '/Users/long/GitHub/DSH-Sym')
+  assert.equal(client.describeCommitLog({ branch: 'main', commits: [] }).root, null, '拿不到就是 null')
+})
+
+
+test('提交记录：固定四列布局，无拖拽手柄（间距 24px，提交列留够英文余量）', () => {
+  // 用户决定不做列宽拖拽（2026-11-03）：挑固定距离更省心，手柄那套也一并撤掉。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // 提交与时间按内容自适应（min-content）：固定列宽会在列内留一段空白，间隔显得很宽。
+  // 必须是固定列宽：表头和数据行是两张独立 grid，min-content 会各算各的宽度，
+  // 结果表头列比数据列窄、1fr 把表头整体推右（2026-11-03 真机错位）。
+  const template = /grid-template-columns:minmax\(0,1fr\) 76px 80px 80px;align-items:center;column-gap:24px/.exec(src)
+  assert.ok(template !== null, '主网格应为「描述 1fr / 提交 76 / 时间 80 / 操作 80」，间距 24px')
+  assert.ok(!/grid-template-columns:[^;]*min-content/.test(src), '不得再用 min-content（两张 grid 之间会错位）')
+  assert.equal((src.match(/dshLog_gutter/g) ?? []).length, 0, '不应再有任何拖拽手柄')
+  assert.equal((src.match(/data-log-gutter/g) ?? []).length, 0, '不应再有手柄的 DOM 标记')
+  assert.ok(!/startDrag|readLogColumns|saveLogColumns/.test(src), '拖拽与列宽持久化的代码应已清除')
+  // 窄屏：时间列收起后剩三列
+  assert.match(src, /@container \(max-width: 620px\)\{[^}]*grid-template-columns:minmax\(0,1fr\) 76px 80px\}/, '窄屏应为 3 列')
+})
+
+test('提交记录：三列都左对齐（表头与数据同侧起点）', () => {
+  // 用户明确要求提交时间左对齐（2026-11-03）。等宽数字保留 —— 对齐方向与位数对齐是两件事。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.ok(!/\.dshLog_date\{[^}]*text-align/.test(src), '时间列不该再有 text-align 覆盖')
+  assert.ok(!/\.dshLog_colDate\{[^}]*text-align/.test(src), '表头时间列不该右对齐')
+  assert.match(src, /\.dshLog_date\{[^}]*tabular-nums/, '等宽数字要保留，位数仍能竖着对')
+})
+
+test('提交记录：三个操作按钮分色（重置黄、两个回滚红）', () => {
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(src, /keep: \{[^}]*tone: "warn"/, '重置用 warn（黄）')
+  assert.match(src, /discard: \{[^}]*tone: "danger"/, '回滚到此处用 danger（红）')
+  assert.match(src, /revert: \{[^}]*tone: "danger"/, '回滚此次提交用 danger（红）')
+  assert.match(src, /\.dshLog_act-warn\{color:var\(--dsw-alias-state-warn-primary/, '黄用 warn 令牌')
+  assert.match(src, /\.dshLog_act-danger\{color:var\(--dsw-alias-state-error-primary/, '红用 error 令牌')
+})
+
+test('提交记录：宽度受 --dsh-chat-content-width 约束，与对话内容区同宽并居中对齐', () => {
+  // 用户要求：表格宽度跟对话页一致，并随输入框拖拽（官方用 --dsh-chat-user-width 覆盖
+  // --dsh-chat-content-width）一起变。变量缺失时必须回落成不限制，否则表格会塌成 96px。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(src, /max-width:calc\(var\(--dsh-chat-content-width,100%\) \+ 96px\)/, '应继承官方内容宽度变量，并留出左右内距')
+  assert.match(src, /margin-inline:auto/, '宽度受限时必须居中，才能与对话内容左缘对齐')
+  assert.match(src, /\.dshLog_root\{[^}]*padding:0 48px/, '左右内距相等，内容才与对话区对齐；左侧 48 同时避开快捷竖条')
+})
+
+test('提交记录：dirty 透传给破坏性确认，老宿主缺字段时是 null 而非 0', () => {
+  // --hard 会丢弃这些文件的未提交改动。说"0 个"比不说更糟 —— 缺字段必须是 null。
+  const client = loadClient()
+  assert.equal(client.describeCommitLog({ commits: [], dirty: 3 }).dirty, 3)
+  assert.equal(client.describeCommitLog({ commits: [], dirty: 0 }).dirty, 0)
+  assert.equal(client.describeCommitLog({ commits: [] }).dirty, null, '老宿主没这个字段')
+  assert.equal(client.describeCommitLog({ commits: [], dirty: -2 }).dirty, 0, '负数夹到 0')
+  assert.equal(client.describeCommitLog({ commits: [], dirty: 1.7 }).dirty, 1, '取整')
+  assert.equal(client.describeCommitLog({ commits: [], dirty: 'x' }).dirty, null, '非数字当缺失')
+})
+
+test('提交记录：组件能渲染且不抛错（无祖先时安静退场）', () => {
+  const client = loadClient()
+  assert.equal(typeof client.CommitLogView, 'function', '组件应已导出')
+  let result
+  try {
+    result = client.__invoke(client.CommitLogView, { t: (key) => key })
+    result = result.element
+  } catch (error) {
+    // 替身环境的限制（hook 未激活 / 没有 document）可以接受；组件自身的
+    // ReferenceError 不行 —— 那会在真机上把整个视图卸载成空白。
+    const msg = String(error?.message ?? error)
+    assert.ok(!/is not defined/.test(msg), '不应是未定义引用（那才是真 bug）：' + msg)
+    return
+  }
+  assert.ok(result !== null && typeof result === 'object', '应返回元素')
+  assert.equal(result.props['data-log-view'], 'commits')
+})
+
+test('提交记录：写操作只发 reset / revert / revert-abort，从不发 push', () => {
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  assert.ok(!/["']push["']/.test(code), '客户端不该出现 push')
+  // --hard 自 2026-11-03 起是合法能力（危险色按钮 + 破坏性确认），
+  // 但它必须以 mode: "hard" 的形式走同一条 POST，而不是拼到命令里。
+  assert.ok(!/--hard/.test(code), '不得把 --hard 拼进命令；它只是 reset 的 mode 值')
+  assert.match(code, /mode: "hard"/, '危险动作应通过 mode 传参')
+  for (const action of ['reset', 'revert']) {
+    assert.ok(code.includes(`action: "${action}"`), '应emit 动作：' + action)
+  }
+})
+
+test('视图：内嵌聊天已撤除（不再有 webview / 租约 / 站点地址的代码残留）', () => {
   // 撤除的原因（站点风控 / 登录不跨重启 / 语言锁死 en-US）见 AGENTS.md。
   // 守卫"确实清干净了"。⚠ 注释里**允许**提到 chat.deepseek.com（那是给后人解释为什么撤除），
   // 所以下面剥掉注释再查 —— 只看真实代码残留。

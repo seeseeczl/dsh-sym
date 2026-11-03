@@ -6,9 +6,9 @@ import {
   DEEPSEEK_CNY, DEFAULT_USD_TO_CNY,
   QUICK_ACTIONS_KEY, DEFAULT_QUICK_ACTIONS, normalizeQuickActions,
   createQuickActionsProjection, buttonsFromConfig, Config,
-  GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute,
+  GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute, parseGitLog,
   CONTEXT_LOSS_KEY, contextLossProjection,
-} from '../lib/host-v19.js'
+} from '../lib/host-v20.js'
 
 /** Beijing wall-clock on 2026-09-30 (a Wednesday) as epoch ms. */
 const bj = (y, m, d, hh, mm = 0) => Date.UTC(y, m - 1, d, hh - 8, mm)
@@ -275,7 +275,7 @@ const PORCELAIN = [
   '# branch.upstream origin/main',
   '# branch.ab +2 -3',
   '1 .M N... 100644 100644 100644 3b2c1d 3b2c1d lib/client.js',
-  '1 M. N... 100644 100644 100644 aa bb lib/host-v19.js',
+  '1 M. N... 100644 100644 100644 aa bb lib/host-v20.js',
   '2 R. N... 100644 100644 100644 aa bb R100 new.js\told.js',
   'u UU N... 100644 100644 100644 100644 aa bb cc conflicted.js',
   '? scratch.txt',
@@ -325,7 +325,7 @@ test('git 状态：numstat 汇总跳过二进制的一侧', () => {
 test('git 状态：宿主不再产出 remote / compare（用户不做 PR 流程）', async () => {
   // 读取器只放行 status/numstat/rev-parse 三类命令；remote 那一步连同它的建 PR 链接
   // 一起被删除，所以这里断言「没有 compare 这个字段」在源码层面也成立。
-  const source = readFileSync(new URL('../lib/host-v19.js', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../lib/host-v20.js', import.meta.url), 'utf8')
   assert.ok(!source.includes('compareUrlFor'), '建 PR 链接的拼接函数应已删除')
   assert.ok(!source.includes("'remote', 'get-url'"), '不应再跑 git remote get-url')
   assert.ok(!source.includes('compare:'), '载荷里不应再有 compare 字段')
@@ -590,7 +590,314 @@ test('C4：超大 body 直接 413，不进解析', async () => {
 
 //#endregion
 
-//#region 上下文损耗投影（compaction 折叠）
+//#region CR-0007 提交记录列表 + 重置 / 回滚
+// 三条硬要求（用户明确要求过）：
+// ① 列表是**完整**历史、可分页；② reset **只改本地**，绝不碰远程；
+// ③ reset 不允许 `--hard`（会丢未提交改动），revert 冲突要如实回报而不是吞掉。
+
+const LOG_ROW = (hash, short, author, at, subject) => [hash, short, author, String(at), subject].join('\t')
+
+test('git log：解析成描述 / 提交 / 作者 / 日期四列，末位自由文本里的制表符不会串列', () => {
+  const stdout = [
+    LOG_ROW('a'.repeat(40), 'aaaaaaa', 'Zhang San', 1700000000, 'feat: 添加提交记录'),
+    LOG_ROW('b'.repeat(40), 'bbbbbbb', 'Li Si', 1700000100, 'fix: tab\tin subject'),
+  ].join('\0') + '\0'
+  const { commits, hasMore } = parseGitLog(stdout, 5)
+  assert.equal(hasMore, false)
+  assert.equal(commits.length, 2)
+  assert.deepEqual(commits[0], { hash: 'a'.repeat(40), short: 'aaaaaaa', author: 'Zhang San', at: 1700000000, subject: 'feat: 添加提交记录' })
+  assert.equal(commits[1].subject, 'fix: tab\tin subject', '主题里的制表符原样保留（它排最后，不会挤掉别的列）')
+  assert.equal(commits[1].author, 'Li Si', '作者列照常')
+})
+
+test('git log：多读的那一行只用于 hasMore，不进结果', () => {
+  const rows = Array.from({ length: 4 }, (_, i) => LOG_ROW(String(i).repeat(40), 'x'.repeat(7), 'a', 1 + i, 'm' + i))
+  const page = parseGitLog(rows.join('\0') + '\0', 3)
+  assert.equal(page.commits.length, 3, '要 3 条就只给 3 条')
+  assert.equal(page.hasMore, true, '第 4 条是"还有下一页"的证据，不是结果')
+  assert.equal(parseGitLog(rows.slice(0, 3).join('\0') + '\0', 3).hasMore, false)
+})
+
+test('git log：真实 git 的分隔是「<NUL><换行>」，剥掉前导换行才能解析（真机踩过）', () => {
+  // `%x00` 之后 git 会另起一行，于是切完 NUL 每条都带一个前导 \n。
+  // 不剥掉它，%H 校验会把**每一个提交**都判成坏行 —— 真机表现是"列表永远为空"。
+  const real = LOG_ROW('a'.repeat(40), 'aaaaaaa', 'A', 1700000000, 'one') + '\0\n'
+    + LOG_ROW('b'.repeat(40), 'bbbbbbb', 'B', 1700000100, 'two') + '\0\n'
+  const { commits } = parseGitLog(real, 10)
+  assert.equal(commits.length, 2, '两条都不能丢')
+  assert.deepEqual(commits.map((c) => c.subject), ['one', 'two'])
+})
+
+test('git log：坏行跳过，时间戳非法时是 null 而不是编造 1970', () => {
+  const stdout = ['short\tx\ty\t1\ttoo-short-hash', LOG_ROW('c'.repeat(40), 'ccccccc', 'A', 'not-a-number', 'ok')].join('\0')
+  const { commits } = parseGitLog(stdout, 10)
+  assert.equal(commits.length, 1, '哈希不合法的那行被丢弃')
+  assert.equal(commits[0].at, null, '时间戳解析不了就是 null')
+  assert.deepEqual(parseGitLog('', 10), { commits: [], hasMore: false })
+  assert.deepEqual(parseGitLog(undefined, 10), { commits: [], hasMore: false })
+})
+
+/** 记录 argv 的替身：log/rev-parse/status 都有回放，写命令由调用方给。 */
+function logStub(writes, extra = {}) {
+  return stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('log')) return { exitCode: 0, stdout: LOG_ROW('d'.repeat(40), 'ddddddd', 'A', 1700000000, 'only') }
+    // revert 前会先探一次「是否已有进行中的 revert」；没有就是退出码 1（正常态）。
+    if (line.startsWith('rev-parse --verify') && /CHERRY_PICK_HEAD|REVERT_HEAD/.test(line)) return { exitCode: 1, stderr: '' }
+    if (line.startsWith('rev-parse --verify') && line.includes('^{commit}')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('rev-parse --short')) return { exitCode: 0, stdout: 'fffffff\n' }
+    if (line.startsWith('rev-parse --short')) return { exitCode: 0, stdout: 'fffffff\n' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: STATUS_MAIN }
+    if (line.startsWith('diff')) return { exitCode: 0, stdout: '' }
+    for (const [prefix, outcome] of Object.entries(writes)) {
+      if (line.startsWith(prefix)) return outcome
+    }
+    return { exitCode: 0, stdout: '' }
+  })
+}
+
+test('git log：分页参数夹紧，且 --format 由宿主写死（调用方给不了格式指令）', async () => {
+  const stub = logStub({})
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const page = await reader.log('/repo', 9999, -5, new AbortController().signal)
+  assert.equal(page.limit, 200, '上限 200')
+  assert.equal(page.skip, 0, '负数偏移按 0')
+  assert.equal(page.commits.length, 1)
+  const argv = stub.calls.find((entry) => entry.includes('log'))
+  assert.ok(argv.includes('--max-count=201'), '多读一条判断 hasMore')
+  assert.ok(argv.includes('--skip=0'))
+  assert.ok(argv.some((entry) => entry.startsWith('--format=')), '格式是宿主给的')
+  assert.deepEqual(argv.slice(-2), ['HEAD', '--'], '修订范围后面必须有 --，路径不会被当成修订')
+})
+
+test('log：载荷带上 dirty（已跟踪文件的未提交改动数），供破坏性确认说清会丢多少', async () => {
+  // `git reset --hard` 会丢弃这些文件的未提交改动，但**不碰**未跟踪文件 ——
+  // 所以只数 files（status 已用 --untracked-files=no），不数 untracked。
+  const make = (statusOut) => stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('log')) return { exitCode: 0, stdout: LOG_ROW('a'.repeat(40), 'aaaaaaa', 'A', 1700000000, 'one') }
+    if (line.startsWith('rev-parse --abbrev-ref')) return { exitCode: 0, stdout: 'main\n' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 1, stderr: '' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: statusOut }
+    return { exitCode: 0, stdout: '' }
+  })
+  const two = make('# branch.head main\n1 .M N... 100644 100644 100644 abc abc f.txt\n1 .M N... 100644 100644 100644 abc abc g.txt\n')
+  const page = await createGitStatusReader({ subprocess: two.subprocess }).log('/repo', 10, 0, new AbortController().signal)
+  assert.ok(page !== null)
+  assert.equal(page.dirty, 2, '两个已跟踪文件有改动')
+
+  const clean = make(STATUS_MAIN)
+  const page2 = await createGitStatusReader({ subprocess: clean.subprocess }).log('/repo', 10, 0, new AbortController().signal)
+  assert.equal(page2.dirty, 0, '干净工作区是 0')
+})
+
+test('reset：mode 是封闭枚举（hard 合法，其它一律在跑 git 之前拒绝）', async () => {
+  // 2026-11-03 起 hard 是**用户明确要求**的能力（"回滚、丢失后面的修改"），
+  // 所以它从"被拒"变成"合法"；但枚举之外的值仍然一个都不许到 git。
+  for (const bad of ['HARD', 'hardd', 'merge', '', null, '--hard', 'soft ']) {
+    const stub = logStub({})
+    const reader = createGitStatusReader({ subprocess: stub.subprocess })
+    const outcome = await reader.reset('/repo', 'ABCDEF', bad, new AbortController().signal)
+    assert.equal(outcome.ok, false, String(bad) + ' 必须被拒')
+    assert.equal(outcome.code, 'invalid')
+    assert.ok(!stub.calls.some((argv) => argv.includes('reset')), '被拒时不得跑 git reset')
+  }
+})
+
+test('reset：hard 会被原样交给 git（它只是换了个 mode，不是绕过）', async () => {
+  const stub = logStub({ reset: { exitCode: 0, stderr: '' } })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.reset('/repo', 'abc1234', 'hard', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  const argv = stub.calls.find((entry) => entry.includes('reset'))
+  assert.deepEqual(argv, ['/usr/local/bin/git', 'reset', '--hard', 'e'.repeat(40), '--'], '仍然走 argv + 尾随 --，用解析后的完整哈希')
+})
+
+test('reset：目标不是提交就拒绝（拒绝选项、拒绝缩写以外的输入）', async () => {
+  for (const bad of ['--hard', 'HEAD~1', 'origin/main', 'not-a-sha', 'abc']) {
+    const stub = stubSubprocess((argv) => {
+      const line = argv.slice(1).join(' ')
+      if (line.startsWith('rev-parse')) return { exitCode: 128, stderr: 'unknown revision' }
+      return { exitCode: 0, stdout: '' }
+    })
+    const reader = createGitStatusReader({ subprocess: stub.subprocess })
+    const outcome = await reader.reset('/repo', bad, 'soft', new AbortController().signal)
+    assert.equal(outcome.ok, false, String(bad) + ' 应当解析不到')
+    if (/^[0-9a-f]{4,64}$/i.test(bad) === false) {
+      assert.equal(stub.calls.length, 0, String(bad) + ' 不是提交 id，连 rev-parse 都不该跑')
+    }
+  }
+})
+
+test('reset：argv 是「已解析的完整哈希 + --mode + --」，且成功后才回一份新读数', async () => {
+  const stub = logStub({ reset: { exitCode: 0, stderr: '' } })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.reset('/repo', 'abc1234', 'keep', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.payload.branch, 'main')
+  const argv = stub.calls.find((entry) => entry.includes('reset'))
+  assert.deepEqual(argv, ['/usr/local/bin/git', 'reset', '--keep', 'e'.repeat(40), '--'], '用解析后的完整哈希，尾随 --')
+  assert.ok(!argv.includes('--hard'), '绝不出现 --hard')
+})
+
+test('reset：git 拒绝时把 stderr 原样回传，且不复用请求的 signal', async () => {
+  const controller = new AbortController()
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('reset')) return { exitCode: 1, stderr: 'error: Your local changes would be overwritten\nAborting\n' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  controller.abort()
+  const outcome = await reader.reset('/repo', 'abc1234', 'mixed', controller.signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'refused')
+  assert.match(outcome.message, /Your local changes/)
+  const write = stub.spawns.find((entry) => entry.argv.includes('reset'))
+  assert.notEqual(write.signal, controller.signal, '写操作不得复用请求 signal')
+})
+
+test('revert：argv 固定为 revert --no-edit <完整哈希> --；成功后带新提交的短号', async () => {
+  const stub = logStub({ revert: { exitCode: 0, stderr: '' } })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.revert('/repo', 'abc1234', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.short, 'fffffff')
+  assert.equal(outcome.payload.branch, 'main')
+  const argv = stub.calls.find((entry) => entry.includes('revert'))
+  assert.deepEqual(argv, ['/usr/local/bin/git', 'revert', '--no-edit', 'e'.repeat(40), '--'])
+})
+
+test('revert：冲突如实回报（code 是 conflict，带挡路文件），不假装成功', async () => {
+  const conflict = {
+    exitCode: 1,
+    stderr: 'Auto-merging f.txt\nCONFLICT (content): Merge conflict in f.txt\nerror: could not revert 1111111... c2\nhint: run "git revert --abort"\n',
+  }
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('revert')) return conflict
+    if (line.startsWith('rev-parse --verify') && /CHERRY_PICK_HEAD|REVERT_HEAD/.test(line)) return { exitCode: 1, stderr: '' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.revert('/repo', 'abc1234', new AbortController().signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'conflict', '必须是 conflict，前端才能提示"已中止的 merge 状态"')
+  assert.deepEqual(outcome.files, [], 'git 用 CONFLICT 行报冲突时，files 为空也不算失败')
+  assert.match(outcome.message, /CONFLICT/)
+})
+
+test('revert：已经有一次在进行的 revert 时不再叠加', async () => {
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('rev-parse --verify') && line.includes('REVERT_HEAD')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.revert('/repo', 'abc1234', new AbortController().signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'busy')
+  assert.ok(!stub.calls.some((argv) => argv.includes('revert')), '不得再跑一次 git revert')
+})
+
+test('revert：冲突后 git 留下的是 REVERT_HEAD，必须能认出来（真机踩过的 bug）', async () => {
+  // 2026-11-03 真机验证实测：冲突的 `git revert` 写的是 REVERT_HEAD，
+  // **不是** CHERRY_PICK_HEAD。只查后者时这层保护完全失效 —— 之后每次 revert
+  // 都被 git 以 "you have unmerged files" 拒绝，而界面上没有任何中止入口。
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('rev-parse --verify') && line.includes('REVERT_HEAD')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('rev-parse --short')) return { exitCode: 0, stdout: 'eeeeeee\n' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.revert('/repo', 'abc1234', new AbortController().signal)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.code, 'busy', '必须报 busy，而不是让 git 再撞一次')
+  assert.equal(outcome.revert.short, 'eeeeeee', '带上卡住的那笔提交，界面才能提示')
+  assert.ok(!stub.calls.some((argv) => argv.includes('revert')), '不得再跑一次 git revert')
+})
+
+test('revert：abortRevert 用 `revert --abort` 收尾，没有在途时是 idle', async () => {
+  // 没有在途：直接 idle，不跑任何写命令
+  const idleStub = stubSubprocess(() => ({ exitCode: 1, stderr: '' }))
+  const idleReader = createGitStatusReader({ subprocess: idleStub.subprocess })
+  const idle = await idleReader.abortRevert('/repo', new AbortController().signal)
+  assert.equal(idle.ok, false)
+  assert.equal(idle.code, 'idle')
+  assert.ok(!idleStub.calls.some((argv) => argv.includes('revert')), '空闲时不得跑 git revert')
+
+  // 有在途：执行 `git revert --abort`
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('rev-parse --verify') && line.includes('REVERT_HEAD')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('rev-parse --short')) return { exitCode: 0, stdout: 'eeeeeee\n' }
+    if (line.startsWith('rev-parse --verify')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: STATUS_MAIN }
+    if (line.startsWith('diff')) return { exitCode: 0, stdout: '' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const outcome = await reader.abortRevert('/repo', new AbortController().signal)
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.payload.branch, 'main')
+  const argv = stub.calls.find((entry) => entry.includes('revert'))
+  assert.deepEqual(argv, ['/usr/local/bin/git', 'revert', '--abort'], '只用 --abort，不带 reset/stash')
+})
+
+test('git log：载荷里带"是否有未完成的回滚"，刷新后界面仍能提示', async () => {
+  const stub = stubSubprocess((argv) => {
+    const line = argv.slice(1).join(' ')
+    if (line.startsWith('log')) return { exitCode: 0, stdout: LOG_ROW('d'.repeat(40), 'ddddddd', 'A', 1700000000, 'only') }
+    if (line.startsWith('rev-parse --verify') && line.includes('REVERT_HEAD')) return { exitCode: 0, stdout: 'e'.repeat(40) + '\n' }
+    if (line.startsWith('rev-parse --short')) return { exitCode: 0, stdout: 'eeeeeee\n' }
+    if (line.startsWith('rev-parse')) return { exitCode: 0, stdout: '/repo\n' }
+    if (line.startsWith('status')) return { exitCode: 0, stdout: STATUS_MAIN }
+    return { exitCode: 0, stdout: '' }
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const page = await reader.log('/repo', 10, 0, new AbortController().signal)
+  assert.equal(page.revert.short, 'eeeeeee', '列表页要说出仓库停在哪笔回滚上')
+})
+
+test('CR-0007 路由：GET kind=log 走新读取器，POST reset/revert 映射成 200 / 409', async () => {
+  const route = gitStatusRoute(
+    { sessions: { get: (id) => (id === 'ok' ? { header: { cwd: '/repo' } } : undefined) } },
+    {
+      read: async () => ({ branch: 'main' }),
+      switchBranch: async (cwd, branch) => ({ ok: true, payload: { branch } }),
+      log: async (cwd, limit, skip) => ({ branch: 'main', commits: [], hasMore: false, limit, skip }),
+      reset: async (cwd, commit, mode) => (mode === 'hard' ? { ok: false, code: 'invalid', message: 'no' } : { ok: true, payload: { branch: 'main', head: commit } }),
+      revert: async () => ({ ok: false, code: 'conflict', message: 'CONFLICT (content): Merge conflict in f.txt', files: ['f.txt'] }),
+    }
+  )
+  const call = async (url, body) => {
+    const response = await route.fetch(new Request('http://x' + url, body === void 0 ? {} : { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }))
+    return { status: response.status, body: await response.json().catch(() => null) }
+  }
+  const log = await call(route.path + '?sessionId=ok&kind=log&limit=50&skip=0')
+  assert.equal(log.status, 200)
+  assert.equal(log.body.limit, 50)
+  // 分支切换的老形状（没有 action 字段）不能被打断 —— CR-0002 的回归。
+  const switched = await call(route.path + '?sessionId=ok', { branch: 'feat/x' })
+  assert.equal(switched.status, 200)
+  assert.equal(switched.body.payload.branch, 'feat/x')
+  assert.equal((await call(route.path, { sessionId: 'ok', action: 'reset', commit: 'abc1234', mode: 'soft' })).status, 200)
+  assert.equal((await call(route.path, { sessionId: 'ok', action: 'reset', commit: 'abc1234', mode: 'hard' })).status, 400)
+  const conflict = await call(route.path, { sessionId: 'ok', action: 'revert', commit: 'abc1234' })
+  assert.equal(conflict.status, 409, '冲突是 409，客户端才能给出"中止"这类说明')
+  assert.deepEqual(conflict.body.files, ['f.txt'])
+  assert.equal((await call(route.path, { sessionId: 'ok', action: 'push' })).status, 400, '未定义动作直接 400')
+})
+
+//#endregion
 // 用户诉求：压缩次数是"信息丢失程度"的指标。客户端拿不到 compaction 事件，
 // 所以由宿主折叠成 { compactions, prunes, lostTokens }。
 
