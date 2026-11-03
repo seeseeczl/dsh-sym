@@ -883,6 +883,34 @@ test('提交记录：dirty 透传给破坏性确认，老宿主缺字段时是 n
   assert.equal(client.describeCommitLog({ commits: [], dirty: 'x' }).dirty, null, '非数字当缺失')
 })
 
+test('提交记录：写操作只能由确认框的「确认」按钮触发，行内按钮一律不写', () => {
+  // 用户对 --hard 的顾虑是"点一下会不会就执行了"。这条守卫把链路钉死：
+  // 行内三个按钮 → 只 setConfirm；取消 / 点别处 / Esc → 只清状态；写只发生在确认按钮里。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  // ① 行内按钮：onClick 只设置确认状态，不带任何 fetch / write
+  const btnStart = src.indexOf('const act = LOG_ACTS[kind]')
+  const btnEnd = src.indexOf('})))', btnStart)
+  assert.ok(btnStart > 0 && btnEnd > btnStart, '应能取到行内按钮的代码块')
+  const btnBlock = src.slice(btnStart, btnEnd)
+  assert.match(btnBlock, /onClick: \(\) => \{ hideHint\(\); setConfirm\(\{ kind, commit \}\); \}/, '按钮只 setConfirm')
+  assert.ok(!/write\(|fetch\(/.test(btnBlock), '行内按钮不得直接写或发请求')
+
+  // ② 取消按钮只清状态
+  assert.match(src, /"data-log-confirm-no": true, onClick: \(\) => setConfirm\(null\)/, '取消只清 confirm')
+
+  // ③ 所有 write( 都在确认按钮之后（确认按钮是唯一写入口）
+  const yesAt = src.indexOf('"data-log-confirm-yes": true')
+  assert.ok(yesAt > 0, '应存在确认按钮')
+  const writes = [...src.matchAll(/void write\(/g)].map((m) => m.index)
+  assert.ok(writes.length >= 3, '至少 keep/discard/revert 三处写')
+  for (const at of writes) assert.ok(at > yesAt, 'write 只能出现在确认按钮的 onClick 里')
+
+  // ④ 点别处 / Esc 只清状态，不写
+  const guardBlock = src.slice(src.indexOf('const onDown = (event) => {'), src.indexOf('}, [confirm]);'))
+  assert.ok(!/write\(/.test(guardBlock), '关闭动作不得触发写')
+})
+
 test('提交记录：组件能渲染且不抛错（无祖先时安静退场）', () => {
   const client = loadClient()
   assert.equal(typeof client.CommitLogView, 'function', '组件应已导出')
