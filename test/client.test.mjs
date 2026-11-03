@@ -967,6 +967,24 @@ test('提交记录：确认框照官方对话框形制，背景不透明；哈�
 })
 
 
+test('提交记录：确认框把焦点圈在弹窗内（Tab 不会跑到背后）', () => {
+  // aria-modal 只是**声明**，浏览器不会替我们拦住 Tab —— 没有焦点陷阱时，键盘用户按 Tab
+  // 会走到弹窗背后表格里的行内按钮上，破坏性确认就形同虚设。
+  const src = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(src, /const dialogRef = React\.useRef\(null\)/, '弹窗要有 ref')
+  assert.match(src, /className: "dshLog_confirm", ref: dialogRef/, 'ref 要绑在弹窗节点上')
+  // 打开时焦点进门
+  assert.match(src, /if \(first !== undefined\) first\.focus\(\)/, '打开时把焦点移进弹窗')
+  // Tab / Shift+Tab 在门内循环，且必须阻止默认行为（否则浏览器会把焦点送出去）
+  assert.match(src, /if \(event\.key !== "Tab"\) return;/, '只处理 Tab')
+  assert.match(src, /if \(event\.key !== "Tab"\) return;[\s\S]{0,220}event\.preventDefault\(\);/, 'Tab 分支里必须拦住默认行为')
+  assert.match(src, /event\.shiftKey \? \(at <= 0 \? list\.length - 1 : at - 1\)/, 'Shift+Tab 反向循环')
+  // 关闭时焦点还给触发元素
+  assert.match(src, /restoreTo\.focus\(\)/, '关闭后要把焦点还回去')
+  // 依赖必须是 confirm（打开/换目标/关闭都重新圈）
+  assert.match(src, /\}, \[confirm\]\);/, 'effect 依赖 confirm')
+})
+
 test('提交记录：组件能渲染且不抛错（无祖先时安静退场）', () => {
   const client = loadClient()
   assert.equal(typeof client.CommitLogView, 'function', '组件应已导出')
