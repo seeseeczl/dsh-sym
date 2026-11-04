@@ -8,6 +8,7 @@ import {
   createQuickActionsProjection, buttonsFromConfig, Config,
   GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute, parseGitLog,
   CONTEXT_LOSS_KEY, contextLossProjection,
+  SESSION_DELETE_ROUTE, deleteSessionRecord, sessionDeleteRoute,
 } from '../lib/host-v20.js'
 
 /** Beijing wall-clock on 2026-09-30 (a Wednesday) as epoch ms. */
@@ -963,3 +964,157 @@ test('contextLoss：契约常量与客户端一致', () => {
   assert.equal(CONTEXT_LOSS_KEY, 'contextLoss')
 })
 //#endregion
+
+//#region 删除会话（CR-0008）
+// 官方没有删除会话的 Remote（`session` 命名空间 21 个方法逐个核过），只有归档 ——
+// 而归档只记一个 id，日志文件与投影缓存永不删除。所以删除只能在宿主侧做，
+// 下面钉住的是它的几条边界：id 形状、live 会话、以及"每一步如实回报"。
+
+/** 一个够用的伪造宿主：可配置 live 集合、stat 结果、以及 locate 的返回。 */
+function deleteCtx(overrides = {}) {
+  const calls = { unarchive: 0, unpin: 0, detach: [], emit: [], deleted: [] }
+  const header = { id: 'session-11111111-2222-3333-4444-555555555555', cwd: '/repo', createdAt: 1 }
+  const ctx = {
+    sessions: { get: (id) => (overrides.live === id ? { header } : undefined) },
+    sessionPersistence: {
+      stat: async (id) => (overrides.missing === id ? undefined : { header }),
+      locate: overrides.noLocate === true ? undefined : () => ({ kind: 'jsonl', path: overrides.logPath ?? '/tmp/sym-test/session-x/session.v4.jsonl.zstd' }),
+    },
+    workspaceRegistry: {
+      unarchiveSession: async () => { calls.unarchive += 1 },
+      unpinSession: async () => { calls.unpin += 1 },
+      list: () => [
+        { sessionIds: [header.id], detachSession: async (id) => { calls.detach.push(id) } },
+        { sessionIds: ['other'], detachSession: async (id) => { calls.detach.push(id) } },
+      ],
+    },
+    get: () => undefined,
+    emit: (...args) => { calls.emit.push(args) },
+  }
+  return { ctx, calls, header }
+}
+
+test('CR-0008：id 形状闸门挡住路径穿越与畸形输入', async () => {
+  const { ctx } = deleteCtx()
+  for (const bad of ['', '../etc', 'session-../../x', 'a/b', 42, null, undefined, 'session-1111']) {
+    const out = await deleteSessionRecord(ctx, bad)
+    assert.equal(out.ok, false, '非法 id 必须拒绝：' + String(bad))
+    assert.equal(out.status, 400)
+  }
+})
+
+test('CR-0008：live 会话拒绝删除（不调用 stopActivity，也不碰文件）', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx({ live: id })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, false)
+  assert.equal(out.status, 409, '正在跑的会话是冲突，不是参数错')
+  assert.deepEqual(calls.detach, [], '拒绝时必须零副作用')
+  assert.deepEqual(calls.emit, [])
+})
+
+test('CR-0008：不存在的会话给 404，且不改任何记账', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx({ missing: id })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.status, 404)
+  assert.equal(calls.unarchive, 0)
+})
+
+test('CR-0008：locate 不可用时如实回报 501，不谎报成功', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx({ noLocate: true })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, false)
+  assert.equal(out.status, 501, '找不到日志路径就必须说找不到，不能说"删好了"')
+  assert.deepEqual(calls.emit, [], '没删掉东西就不能广播移除')
+})
+
+test('CR-0008：正常删除摘归档/置顶/记账，并广播 api-session/removed', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx()
+  // 用真实临时目录，验证真的把目录删掉了（而不是只走流程）。
+  const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = await mkdtemp(join(tmpdir(), 'sym-del-'))
+  const dir = join(root, id)
+  await mkdir(dir)
+  const log = join(dir, 'session.v4.jsonl.zstd')
+  await writeFile(log, 'x')
+  ctx.sessionPersistence.locate = () => ({ kind: 'jsonl', path: log })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, true)
+  assert.equal(calls.unarchive, 1)
+  assert.equal(calls.unpin, 1)
+  assert.deepEqual(calls.detach, [id], '只摘记账里真的含有该 id 的那个工作区')
+  assert.deepEqual(calls.emit, [['api-session/removed', id]])
+  const { existsSync } = await import('node:fs')
+  assert.equal(existsSync(dir), false, '日志目录必须真的消失')
+  assert.equal(existsSync(root), true, '父目录是别的会话共用的，不能连带删')
+  const { rm } = await import('node:fs/promises')
+  await rm(root, { recursive: true, force: true })
+})
+
+test('CR-0008 路由：只认 POST + application/json，其余 405/415', async () => {
+  const { ctx } = deleteCtx()
+  const route = sessionDeleteRoute(ctx)
+  assert.equal(route.path, SESSION_DELETE_ROUTE)
+  assert.deepEqual(route.methods, ['POST'])
+  const get = await route.fetch(new Request('http://x' + route.path))
+  assert.equal(get.status, 405)
+  const form = await route.fetch(new Request('http://x' + route.path, { method: 'POST', body: 'sessionId=x', headers: { 'content-type': 'application/x-www-form-urlencoded' } }))
+  assert.equal(form.status, 415, '跨站表单发不出 JSON，这一条就是 CSRF 闸门')
+  const ok = await route.fetch(new Request('http://x' + route.path, { method: 'POST', body: JSON.stringify({ sessionId: 'nope' }), headers: { 'content-type': 'application/json' } }))
+  assert.equal(ok.status, 400, '非法 id 走 400，而不是 500')
+})
+//#endregion
+
+// 以下三条是 2026-11-04 功能审计（AUD-001/002）的回归守卫。
+// 都是**先跑出真实现象、再修**：没有守卫的话，同样的顺序错误会悄悄长回来。
+
+test('AUD-001：locate 抛异常时零副作用（不能先摘记账再报失败）', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx()
+  ctx.sessionPersistence.locate = () => { throw new Error('locate exploded') }
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, false)
+  assert.equal(out.status, 501)
+  // 关键：报失败时归档/置顶/记账**一个都不能动**，否则用户看到"删除失败"却发现会话挪了位置。
+  assert.deepEqual(calls.detach, [], '失败路径不得 detach 记账')
+  assert.deepEqual(calls.emit, [], '失败路径不得广播移除')
+  assert.equal(calls.unarchive, 0, '失败路径不得摘归档')
+  assert.equal(calls.unpin, 0, '失败路径不得摘置顶')
+})
+
+test('AUD-002：日志目录不存在时必须报失败、且不广播移除（不许假删除）', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { ctx, calls } = deleteCtx()
+  // `rm(force:true)` 对不存在的路径会**静默成功**，所以这条必须靠显式复核挡住。
+  ctx.sessionPersistence.locate = () => ({ kind: 'jsonl', path: '/definitely/not/there/session-x/session.v4.jsonl.zstd' })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, false, '删不掉磁盘文件就不能报成功')
+  assert.equal(out.status, 500)
+  assert.deepEqual(calls.emit, [], '日志还在时广播移除 = 界面行消失但文件还在，最危险的谎报')
+})
+
+test('AUD-002：真删掉了才广播，且目录确实消失', async () => {
+  const id = 'session-11111111-2222-3333-4444-555555555555'
+  const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { existsSync } = await import('node:fs')
+  const root = await mkdtemp(join(tmpdir(), 'sym-aud-'))
+  const dir = join(root, id)
+  await mkdir(dir)
+  const log = join(dir, 'session.v4.jsonl.zstd')
+  await writeFile(log, 'x')
+  const { ctx, calls } = deleteCtx()
+  ctx.sessionPersistence.locate = () => ({ kind: 'jsonl', path: log })
+  const out = await deleteSessionRecord(ctx, id)
+  assert.equal(out.ok, true)
+  assert.equal(existsSync(dir), false, '目录必须真的消失')
+  assert.deepEqual(calls.emit, [['api-session/removed', id]], '删成功才广播')
+  const { rm } = await import('node:fs/promises')
+  await rm(root, { recursive: true, force: true })
+})

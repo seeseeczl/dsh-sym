@@ -1131,3 +1131,83 @@ test('导出：同一会话连点只发起一次预检（并发折叠）', async
   }
 })
 //#endregion
+
+test('渲染冒烟：删除会话的菜单行与确认框在 primitives 缺失时安静退场', () => {
+  // 与导出行同一条约定：官方 primitives 拿不到就返回 null，不注册一条看不见的空行。
+  // 更要紧的是**确认框不能挂在菜单行里** —— 菜单一关菜单项就卸载，
+  // 弹窗会刚出现就被销毁（用户看到"点了没反应"）。守卫在下面一条。
+  const t = (key) => key
+  // 显式把菜单叶子与弹窗都拿掉，模拟"没有 primitives 包"的部署。
+  const bare = loadClient({ primitives: { MenuItemButton: undefined, Modal: undefined } })
+  for (const name of ['DeleteSessionMenuItem', 'DeleteSessionDialog']) {
+    const view = bare[name]
+    assert.equal(typeof view, 'function', name + ' 应已导出')
+    let result
+    try {
+      result = name === 'DeleteSessionMenuItem'
+        ? view({ sessionId: 's-1', useMenuOpenState: () => [false, () => {}], t })
+        : view({ useDeleteRequest: () => null, dismissDeleteRequest: () => {}, t })
+    } catch (error) {
+      assert.fail(name + ' 不该抛错：' + String(error?.message ?? error))
+    }
+    assert.equal(result, null, name + ' 在 primitives 缺失时应返回 null')
+  }
+})
+
+test('渲染冒烟：删除会话的两半在 primitives 齐全时真的产出元素，且危险色只用官方令牌', () => {
+  const client = loadClient()
+  const t = (key, params) => (params === void 0 ? key : key + ':' + JSON.stringify(params))
+  // 菜单行：必须是 danger（红），并带 separatorBefore 与官方归档同一条发丝线。
+  const row = client.DeleteSessionMenuItem({ sessionId: 's-1', displayTitle: 'T', useMenuOpenState: () => [false, () => {}], t })
+  assert.equal(row?.props?.danger, true, '删除是不可撤销操作，菜单行必须走 danger')
+  // 确认框：有请求时渲染 Modal；无请求时返回 null（不占界面）。
+  const idle = client.DeleteSessionDialog({ useDeleteRequest: () => null, dismissDeleteRequest: () => {}, t })
+  assert.equal(idle, null, '没有待确认请求时不能挂在界面上')
+  const dialog = client.DeleteSessionDialog({
+    useDeleteRequest: () => ({ sessionId: 's-1', displayTitle: 'T' }),
+    dismissDeleteRequest: () => {},
+    t,
+  })
+  assert.equal(typeof dialog, 'object', '有请求时必须渲染确认框')
+  // 危险按钮的底色只能来自官方语义令牌；自造色号会在换主题时漂移。
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const css = source.slice(source.indexOf('const CSS ='), source.indexOf('const CSS =') + 1e5)
+  assert.match(css, /\.dshSymDanger[^{]*\{[^}]*var\(--dsw-alias-state-error-primary\)/, '危险按钮必须用官方的 error 语义色')
+})
+
+test('删除会话：确认框注册在 shell.overlay，且与菜单行共享同一个 store', () => {
+  // 跨组件共享一个待确认请求时，`inject.hooks` 的键会被渲染侧机械地变成 `use<Name>`，
+  // 覆盖同名 props。所以那个键**不能**叫 `dismissDeleteSession`，否则组件永远拿到投影值。
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const at = source.indexOf('function installDeleteSession')
+  assert.ok(at > 0, 'installDeleteSession 应存在')
+  const body = source.slice(at, at + 900)
+  assert.match(body, /shell\.overlay/, '确认框必须注册在 shell.overlay，不能留在菜单行里')
+  assert.match(body, /sym-delete-session", 901/, '菜单行 order 901：破坏性操作排在菜单最末')
+  assert.match(body, /hooks: \{ deleteSessionRequest/, 'hooks 的键不能与 dismiss 同名')
+  assert.match(body, /dismissDeleteSession/, '收起函数是普通 prop，不是 hook')
+})
+
+test('AUD-003：重复安装删除会话不得换掉 store（否则菜单与确认框裂开）', () => {
+  // 注册表对重复 id 会**跳过**注册，但已挂载的确认框仍订阅着旧 store。
+  // 若每次安装都新建 store，菜单行写新 store、确认框听旧 store → 点击永远弹不出确认框。
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const at = source.indexOf('function installDeleteSession')
+  const body = source.slice(at, at + 1200)
+  assert.match(body, /if \(deleteRequestStore === null\)/, 'store 只能建一次')
+  assert.match(body, /const store = deleteRequestStore;/, '后续注册必须复用同一个 store 引用')
+})
+
+test('AUD-004/006：primitives 判定分别按需、失败原因走本地文案', () => {
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // AUD-004：确认框要 Modal **且** Button，不能只判 Modal。
+  assert.match(source, /typeof primitives\.Modal !== "function" \|\| typeof primitives\.Button !== "function"/, '确认框要 Modal 与 Button 都在（缺任一个就退场）')
+  // AUD-005：primitives 结果必须缓存，不能每次渲染都 require。
+  assert.match(source, /menuPrimitivesCache/, 'menuPrimitives 结果要缓存')
+  // AUD-006：失败原因按状态码本地化，宿主英文原文只落日志。
+  assert.match(source, /function deleteFailureKey\(/, '要有状态码 → 文案键的映射')
+  assert.match(source, /deleteFailureKey\(response\.status\)/, '错误文案要经本地化映射')
+  for (const key of ['sessionDeleteLive', 'sessionDeleteGone', 'sessionDeleteNoPath', 'sessionDeleteFailedNetwork']) {
+    assert.match(source, new RegExp('"' + key + '": "'), key + ' 要有中文文案')
+  }
+})

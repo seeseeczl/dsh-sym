@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import {
   PROJECTION_KEY, QUOTE_MARK_PREFIX, QUOTE_MARK_ID_LENGTH, QUICK_ACTIONS_KEY,
   DEFAULT_QUICK_ACTIONS, sessionCostProjection, rememberProse, expandQuoteMarks,
-  GIT_STATUS_ROUTE, CONTEXT_LOSS_KEY,
+  GIT_STATUS_ROUTE, CONTEXT_LOSS_KEY, SESSION_DELETE_ROUTE,
 } from '../lib/host-v20.js'
 import { loadClient } from './helpers/load-client.mjs'
 
@@ -26,6 +26,7 @@ test('跨端契约：投影 key 与引用标记格式，两端常量一致', () 
   assert.equal(client.QUICK_ACTIONS_KEY, QUICK_ACTIONS_KEY, '快捷按钮条的投影 key 必须两端同名')
   assert.equal(client.GIT_STATUS_ROUTE, GIT_STATUS_ROUTE, 'Git 读数的认证路由必须两端同名（失配时胶囊静默消失）')
   assert.equal(client.CONTEXT_LOSS_KEY, CONTEXT_LOSS_KEY, '上下文损耗投影 key 必须两端同名（失配时那一格静默消失）')
+  assert.equal(client.SESSION_DELETE_ROUTE, SESSION_DELETE_ROUTE, '删除会话的同源路由必须两端同名（失配时点「删除」只会 404）')
 })
 
 test('跨端契约：两端的默认按钮清单必须一致', () => {

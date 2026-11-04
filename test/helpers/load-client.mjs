@@ -144,6 +144,12 @@ export function loadClient(options = {}) {
       MenuItemButton: () => null,
       IconCopyOutlineRegular: () => null,
       IconDownloadOutlineRegular: () => null,
+      // 删除会话的确认框要 `Modal` + `Button`（与官方「删除工作区」同形制）；
+      // 托盘图标缺失时组件会退到警告图标，所以这里两个都给。
+      Modal: () => null,
+      Button: () => null,
+      IconTrashOutlineRegular: () => null,
+      IconWarningOutlineRegular: () => null,
       writeClipboard: async () => true,
       ...(options.primitives ?? {}),
     }

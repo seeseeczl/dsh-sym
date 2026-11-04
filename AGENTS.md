@@ -216,6 +216,25 @@ ExportSessionMenuItem(props) -> element | null
     // props：`{ sessionId, useMenuOpenState, t }`。
     // ⚠ **所有 hook 必须在任何 return 之前** —— 槽组件的老坑（见下面「槽组件里所有 hook…」）。
     // ⚠ primitives（`MenuItemButton`）缺失时返回 null。
+
+installDeleteSession(ctx) -> void
+    // CR-0008。**两半**，由 `installSessionMenu` 一并装上：
+    //   ① `sym-delete-session`(order 901，`danger`) →
+    //      **菜单最末一项**，排在官方五项与导出(900)之后；不带 `separatorBefore`
+    //      （它上面的线由导出行画，两行都带会画出两条紧挨的发丝线）；
+    //   ② `shell.overlay` 里的常驻确认框 `sym-delete-session-confirm`。
+    // ⚠ **确认框绝不能在菜单行里渲染**：菜单一关菜单项就卸载，弹窗会刚出现就被销毁
+    //    （用户看到的是"点了没反应"）。官方归档/改名同样是"菜单行发请求 +
+    //    shell.overlay 常驻组件收请求"，照抄即可。
+    // ⚠ 两半共享一个 `minStore(null)`（形状同官方 `createSnapshotStore`）。`inject.hooks` 的键
+    //    **不能**叫 `dismissDeleteSession` —— 渲染侧会把每个键机械变成 `use<Name>` 并覆盖同名
+    //    props，撞名等于那个 prop 永远拿不到。所以 hook 键叫 `deleteSessionRequest`，
+    //    收起函数作为普通 prop 下发。
+
+DeleteSessionMenuItem(props) -> element | null
+    // props：`{ sessionId, displayTitle, useMenuOpenState, t }`。`danger: true`（红）。
+DeleteSessionDialog(props) -> element | null
+    // props：`{ useDeleteSessionRequest, dismissDeleteSession, t }`；无待确认请求时 null。
 ```
 
 ### 降级日志（`noteDegrade`）
@@ -258,6 +277,7 @@ ExportSessionMenuItem(props) -> element | null
 | 投影 `quickActions`（stateVersion 1） | 宿主 → 客户端 | 只带按钮清单（配置的只读投影） |
 | 投影 `contextLoss`（stateVersion 1，CR-0004） | 宿主 → 客户端 | 只存计数与 token 数（`compactions` / `prunes` / `lostTokens` / `lastTurn` / `lastFailed`），**不存摘要文本**；只有 `compaction/summary` 与 `compaction/prune` 计数（start/end 不算，否则失败或取消的压缩会被算成成功） |
 | 认证路由 `GET\|POST /api/sym.git`（CR-0001 + CR-0002） | 宿主 ↔ 客户端的 Git 读数与**分支切换** | 常量 `GIT_STATUS_ROUTE` 两端各一份（契约测试守卫）；字段清单见 `.project-architect.json` 的 `contracts.gitStatusRoute`；GET 读数、POST 只做 `git switch`（白名单 + argv + `--`，不 `-f`/不 stash/不 reset）；不调托管平台 API、不碰凭据，非仓库一律 404 |
+| 认证路由 `POST /api/sym.session-delete`（CR-0008） | 宿主 ↔ 客户端的**删除会话** | 常量 `SESSION_DELETE_ROUTE` 两端各一份（契约测试守卫）；只认 POST + `application/json`（跨站表单发不出该类型 = CSRF 闸门）；id 必须匹配 `session-<uuid>`；**live 会话一律 409**、找不到日志路径一律 501，**不谎报成功** |
 | 引用标记 `@引用#<12位id>` | 客户端写入、宿主展开 | **两端必须同步改** |
 | `lib/prices.json` 字段 | 对用户可见 | `usdToCny` / `holidays` / `models`，破坏性变更需 CR |
 | `data-sym-*` DOM 属性 | 供验证脚本定位 | **非稳定 API**，可改但需同步测试 |
@@ -274,6 +294,7 @@ ExportSessionMenuItem(props) -> element | null
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
 | `QUICK_ACTIONS_KEY` | 同上 | 同上 |
 | `GIT_STATUS_ROUTE` | 同上 | 同上 |
+| `SESSION_DELETE_ROUTE` | 同上 | 同上 |
 
 **守卫在 `test/contracts.test.mjs`**：它断言两边相等，并用"客户端生成标记 → 宿主展开"
 证明两端真的对得上。**改任何一端都要跑 `npm test`**——失配不会报错，只会表现为
