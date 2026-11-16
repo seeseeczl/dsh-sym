@@ -50,6 +50,14 @@ const MAX_K = 2.0
 const ROUND_BUMP = 1.02
 const ROUND_RATIO = 0.85
 
+/**
+ * 光学补偿（对称的另一半）：**含实心元素的图标看起来偏胖**。
+ * 描边图形只有轮廓墨水，实心块是满满一块面，同样包围盒下视觉重量更大。
+ * 规范给的是描边略放大 1–2%；反过来，含实心的整体**收 1%** 与之对称。
+ * 判定规则：图标里存在 `fill === 'currentColor'` 的图形元素（Lucide 的圆点等）。
+ */
+const SOLID_SHRINK = 0.99
+
 const NUM = /-?\d*\.?\d+/g
 
 function* flattenCubic(p0, p1, p2, p3, n = 16) {
@@ -159,7 +167,10 @@ export function fitTable(icons, stroke) {
     const biggestCircle = Math.max(0, ...shapes
       .filter(([tag, attrs]) => tag === 'circle' && attrs.stroke !== 'none')
       .map(([, attrs]) => Number(attrs.r) * 2))
-    const bump = s > 0 && biggestCircle / s >= ROUND_RATIO ? ROUND_BUMP : 1
+    let bump = s > 0 && biggestCircle / s >= ROUND_RATIO ? ROUND_BUMP : 1
+    // 含实心元素 → 视觉上偏重，收回 1% 与圆形外扩对称。两者同时命中时相乘。
+    const hasSolid = shapes.some(([, attrs]) => attrs !== undefined && attrs.fill === 'currentColor')
+    if (hasSolid) bump *= SOLID_SHRINK
     const k = Math.min(MAX_K, Math.max(MIN_K, (TARGET * bump) / s))
     // 让墨迹中心落在格心：先按 k 缩放，再把缩放后的中心移回 (8,8)
     table[name] = [Number(k.toFixed(3)), Number((8 - k * box.cx).toFixed(2)), Number((8 - k * box.cy).toFixed(2))]

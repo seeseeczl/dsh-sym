@@ -1211,3 +1211,143 @@ test('AUD-004/006：primitives 判定分别按需、失败原因走本地文案'
     assert.match(source, new RegExp('"' + key + '": "'), key + ' 要有中文文案')
   }
 })
+
+
+//#region 竖条让位给右侧栏（用户 2026-11-09：「打开右侧栏时竖条挡着内容」）
+// 这一版踩过一个**致命且完全静默**的坑：CSS 常量里写了未转义的双引号，
+// 整个 `const CSS = "…"` 提前结束，客户端模块**语法错误、根本没加载** ——
+// 界面上表现为「功能没实现」，没有任何报错。所以第一条守卫是「模块必须能加载」。
+//
+// 判据也换过三次：属性判据（`data-rightbar-collapsed`）是 `void 0` 语义，
+// 展开时属性被整个删掉，实测反复判错。现在改成**直接量右侧栏面板的几何**：
+// 收起时内容被 translateX 推出视口，展开时落在视口内。几何不会撒谎。
+
+test('竖条：客户端模块本身必须能加载（CSS 常量里的引号没转义会让整块静默失踪）', () => {
+  const client = loadClient()
+  assert.equal(typeof client.rightbarVisible, 'function', '判据函数必须导出')
+  assert.equal(typeof client.QuickActionsRail, 'function', '竖条组件必须导出')
+})
+
+/**
+ * 造一个右侧栏面板替身，属性语义照抄 asar 里 `SidebarPanel` 的渲染：
+ * 展开 → 带 `data-sidebar-right-open`；收起 → 带 `aria-hidden`。
+ * @param options.open - 是否展开。
+ * @param options.hidden - 是否是后台会话的隐藏子树。
+ * @param options.fullscreen - 是否全屏面板。
+ * @param options.noPanel - 完全没有面板。
+ */
+function panelDocument(options = {}) {
+  const attrs = new Set()
+  if (options.open) attrs.add('data-sidebar-right-open')
+  else attrs.add('aria-hidden')
+  if (options.fullscreen) attrs.add('data-rightbar-fullscreen')
+  const panel = {
+    hasAttribute: (name) => attrs.has(name),
+    // 只有隐藏子树才返回非 null，模拟 `closest("[hidden]")`
+    closest: (sel) => (sel === '[hidden]' && options.hidden ? {} : null),
+    // 浮窗桩：`querySelector("[data-dockkit-float]")` 命中即算浮窗存在。
+    querySelector: (sel) => (options.float && sel.includes('dockkit-float') ? {} : null),
+  }
+  return {
+    querySelector: () => null,
+    querySelectorAll: () => (options.noPanel ? [] : [panel]),
+    documentElement: { style: { setProperty() {}, removeProperty() {} }, dataset: {} },
+    addEventListener() {}, removeEventListener() {},
+  }
+}
+
+test('竖条：右侧栏展开时收起、收起时回来（读面板自己的权威标记）', () => {
+  const check = (opts, expected, label) => {
+    assert.equal(loadClient({ document: panelDocument(opts) }).rightbarVisible(), expected, label)
+  }
+  check({ open: true }, true, '展开（带 data-sidebar-right-open）必须认成占位')
+  check({ open: false }, false, '收起（只有 aria-hidden）必须认成未占位')
+  check({ open: true, fullscreen: true }, true, '全屏必须算占位')
+  // 浮窗不设 data-sidebar-right-open，但它浮在正文上，同样挡字。
+  check({ open: false, float: true }, true, '浮窗必须算占位')
+})
+
+test('竖条：后台会话的隐藏面板不算占位', () => {
+  const client = loadClient({ document: panelDocument({ open: true, hidden: true }) })
+  assert.equal(client.rightbarVisible(), false, '被 hidden 祖先遮住的面板不该让竖条收起')
+})
+
+test('竖条：没有右侧栏面板时不能凭判断失败把竖条藏了', () => {
+  assert.equal(loadClient({ document: panelDocument({ noPanel: true }) }).rightbarVisible(), false)
+})
+
+test('竖条：判据是纯读，重复调用不写任何 DOM（不会自激）', () => {
+  const client = loadClient({ document: panelDocument({ open: true }) })
+  for (let i = 0; i < 20; i += 1) assert.equal(client.rightbarVisible(), true)
+})
+//#endregion
+
+
+test('设置：没有存储时改开关必须真的写进去，不能把改动丢掉', () => {
+  // 曾经的 bug：勾选框在没有历史配置时把 `null` 传给 writeStoredQuickActions，
+  // 而 null 的语义是"恢复默认（清空存储）"，于是开关改动被静默丢弃 ——
+  // 界面看起来能点，实际什么都没存。
+  const store = new Map()
+  const savedLocalStorage = globalThis.localStorage
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, v),
+    removeItem: (k) => store.delete(k),
+  }
+  try {
+    const client = loadClient()
+    // 关掉「显示竖条」：即便从零状态开始，也必须写出 enabled=false
+    const ok = client.__persistSwitchesForTest({ enabled: false })
+    assert.equal(ok, true, '写入必须成功')
+    assert.equal(store.size, 1, '必须真的写了一条记录，而不是 removeItem')
+    const saved = JSON.parse(store.get('dsh-sym.quick-actions'))
+    assert.equal(saved.enabled, false, 'enabled 必须是 false')
+    assert.ok(Array.isArray(saved.buttons) && saved.buttons.length > 0, '必须带上默认按钮清单')
+  } finally {
+    if (savedLocalStorage === undefined) delete globalThis.localStorage
+    else globalThis.localStorage = savedLocalStorage
+  }
+})
+
+test('设置：自动收起的开关用反向字段存储，缺省为开', () => {
+  const store = new Map()
+  const savedLocalStorage = globalThis.localStorage
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, v),
+    removeItem: (k) => store.delete(k),
+  }
+  try {
+    const client = loadClient()
+    // 关掉自动收起 → 存成 autoCollapseOff: true
+    client.__persistSwitchesForTest({ autoCollapse: false })
+    assert.equal(JSON.parse(store.get('dsh-sym.quick-actions')).autoCollapseOff, true, '关掉必须写 autoCollapseOff=true')
+    // 再打开 → 反向字段回到 false
+    client.__persistSwitchesForTest({ autoCollapse: true })
+    assert.equal(JSON.parse(store.get('dsh-sym.quick-actions')).autoCollapseOff, false, '打开必须写 autoCollapseOff=false')
+    // 旧数据的 autoCollapse:false 不能把功能闷掉
+    store.set('dsh-sym.quick-actions', JSON.stringify({ enabled: true, buttons: [{ id: 'a', label: 'a', kind: 'prompt', value: 'x' }], autoCollapse: false }))
+    assert.equal(client.readStoredQuickActions().autoCollapseOff, false, '旧字段不参与判定')
+  } finally {
+    if (savedLocalStorage === undefined) delete globalThis.localStorage
+    else globalThis.localStorage = savedLocalStorage
+  }
+})
+
+
+test('竖条：CSS 常量里不能出现裸双引号（否则整个模块语法错误、静默不加载）', async () => {
+  // 这个坑踩过两次：`[style*="x"]`、`content:""` 都会让 `const CSS = "…"` 提前结束，
+  // 客户端模块直接语法错误 —— 界面上表现为「功能没实现」，且没有任何报错。
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const here = dirname(fileURLToPath(import.meta.url))
+  const src = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+  // 抽出 CSS 常量的字面量部分（从 `const CSS = "` 到行尾引号）
+  const line = src.split('\n').find((l) => l.trimStart().startsWith('const CSS = "'))
+  assert.ok(line, '必须能找到 CSS 常量')
+  // 该行以 `";` 结尾，中间不允许出现未转义的双引号
+  const body = line.slice(line.indexOf('= "') + 3)
+  const unescaped = body.slice(0, -2).replace(/\\"/g, '')
+  assert.equal(unescaped.includes('"'), false, 'CSS 串内不得出现未转义双引号')
+})

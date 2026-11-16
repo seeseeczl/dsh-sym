@@ -101,7 +101,14 @@ export function loadClient(options = {}) {
 
   let captured = null
   try {
-    globalThis.window = { __ModuleLoader__: { load: (mod) => { captured = mod } } }
+    // 真实浏览器里 `window` 同时是模块加载器和窗口对象（带 `innerWidth` 等几何）。
+    // 替身必须带上几何字段，否则任何按视口判定的逻辑在测试里都会被误判成"没有窗口"。
+    globalThis.window = {
+      __ModuleLoader__: { load: (mod) => { captured = mod } },
+      innerWidth: options.innerWidth ?? 1440,
+      innerHeight: options.innerHeight ?? 900,
+      addEventListener() {}, removeEventListener() {},
+    }
 
     const source = readFileSync(CLIENT, 'utf8')
     // The bundle is CJS-ish inside the factory; run it with the shim globals.
