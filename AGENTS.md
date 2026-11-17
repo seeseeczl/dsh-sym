@@ -91,7 +91,7 @@
 对下面这些接口**连续误判 6 次**——因为契约此前只存在于实现里。**签名与返回契约以实现为准，
 本节是它的可读副本；发现不一致时先改本节。**
 
-### `lib/host-v20.js`
+### `lib/host-v21.js`
 
 ```js
 isPeakTime(ms, holidays = new Set(DEFAULT_HOLIDAYS)) -> boolean
@@ -290,7 +290,7 @@ DeleteSessionDialog(props) -> element | null
 
 | 常量 | 宿主 | 客户端 |
 |---|---|---|
-| `PROJECTION_KEY` | `lib/host-v20.js` 顶部 | `lib/client.js` 的 contract 区 |
+| `PROJECTION_KEY` | `lib/host-v21.js` 顶部 | `lib/client.js` 的 contract 区 |
 | `QUOTE_MARK_PREFIX` / `QUOTE_MARK_ID_LENGTH` | 同上 | 同上 |
 | `QUICK_ACTIONS_KEY` | 同上 | 同上 |
 | `GIT_STATUS_ROUTE` | 同上 | 同上 |
@@ -379,14 +379,14 @@ DeleteSessionDialog(props) -> element | null
     缓存钉住**，把包内文件换成新内容、甚至改 `package.json` 的 `main` 到新文件名都不生效
     （与下面「宿主代码不热重载」同源，只是换文件名的招数在包形态下失效）。
   - 想在**不重启 App**的前提下用工作副本，现在可行的做法：给 profile patch 追加一条**新 id 的
-    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v20.js`），
+    insert** 指向工作副本（如 `id: sym-dev` + `name: file:///…/lib/host-v21.js`），
     `set_plugin` 打开它、并把 `include:sym-cost` 关掉。**必须关掉包安装那条**：两条都提供
     `dsh-sym` 时，客户端模块图按包名去重，只会发出包安装那份 `client.js`（宿主新、客户端旧）。
   - 长期方案：把 profile 依赖改成 `link:`/`file:` 指向工作副本，或重建 `file://` 挂载 —— 两者都
     需要一次 App 重启。
 - **`file://` 挂载 ≠ 不是插件**（2026-10-01 查 asar 证实）：loader 里有 `nearestPackage()`
   （asar 偏移 18777873），拿到 `file://` 入口后会**向上找最近的 `package.json`** 当包根。
-  所以 `file:///…/lib/host-v20.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
+  所以 `file:///…/lib/host-v21.js` 最终仍被认成包 `dsh-sym`，客户端半边照样走
   `exports["./client"]` + `dsh.client` 解析 —— 与包安装的**唯一**差别是入口由绝对路径给出，
   而不是由 profile 的 `node_modules` 解析。
   选它是为了开发期的迭代速度：改 `lib/client.js` 刷新即生效、改 `prices.json` 即时生效、
@@ -433,7 +433,7 @@ DeleteSessionDialog(props) -> element | null
   `pnpm update dsh-sym` 把包从 1.5.0 换成 1.6.0 后，`lib/host-v13.js`（boot 时记录的入口）已不存在，
   于是 `set_plugin include:sym-cost true` 直接报 `sym-cost (dsh-sym): failed to import`。
   **不改代码、不重启的解法**：在安装好的包里把旧入口路径补成一个一行再导出
-  （`lib/host-v13.js` → `export * from './host-v20.js'`），再"停用 → 启用"即可；
+  （`lib/host-v13.js` → `export * from './host-v21.js'`），再"停用 → 启用"即可；
   本机 profile 的 `node_modules/dsh-sym` 里现在就有这么一份 shim（**它不属于发布产物**，
   下次 `pnpm install` 会被清掉，清掉后要重启 App 才能重新装配这个 entry）。
   → 结论：**换包 + 不重启 App** 是有条件的；干净做法仍然是重启。

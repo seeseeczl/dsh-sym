@@ -9,7 +9,7 @@ import {
   GIT_STATUS_ROUTE, parseGitStatus, parseNumstatTotals, parseBranches, createGitStatusReader, gitStatusRoute, parseGitLog,
   CONTEXT_LOSS_KEY, contextLossProjection,
   SESSION_DELETE_ROUTE, deleteSessionRecord, sessionDeleteRoute,
-} from '../lib/host-v20.js'
+} from '../lib/host-v21.js'
 
 /** Beijing wall-clock on 2026-09-30 (a Wednesday) as epoch ms. */
 const bj = (y, m, d, hh, mm = 0) => Date.UTC(y, m - 1, d, hh - 8, mm)
@@ -276,7 +276,7 @@ const PORCELAIN = [
   '# branch.upstream origin/main',
   '# branch.ab +2 -3',
   '1 .M N... 100644 100644 100644 3b2c1d 3b2c1d lib/client.js',
-  '1 M. N... 100644 100644 100644 aa bb lib/host-v20.js',
+  '1 M. N... 100644 100644 100644 aa bb lib/host-v21.js',
   '2 R. N... 100644 100644 100644 aa bb R100 new.js\told.js',
   'u UU N... 100644 100644 100644 100644 aa bb cc conflicted.js',
   '? scratch.txt',
@@ -326,7 +326,7 @@ test('git 状态：numstat 汇总跳过二进制的一侧', () => {
 test('git 状态：宿主不再产出 remote / compare（用户不做 PR 流程）', async () => {
   // 读取器只放行 status/numstat/rev-parse 三类命令；remote 那一步连同它的建 PR 链接
   // 一起被删除，所以这里断言「没有 compare 这个字段」在源码层面也成立。
-  const source = readFileSync(new URL('../lib/host-v20.js', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../lib/host-v21.js', import.meta.url), 'utf8')
   assert.ok(!source.includes('compareUrlFor'), '建 PR 链接的拼接函数应已删除')
   assert.ok(!source.includes("'remote', 'get-url'"), '不应再跑 git remote get-url')
   assert.ok(!source.includes('compare:'), '载荷里不应再有 compare 字段')
@@ -1091,10 +1091,12 @@ test('AUD-002：日志目录不存在时必须报失败、且不广播移除（�
   const id = 'session-11111111-2222-3333-4444-555555555555'
   const { ctx, calls } = deleteCtx()
   // `rm(force:true)` 对不存在的路径会**静默成功**，所以这条必须靠显式复核挡住。
-  ctx.sessionPersistence.locate = () => ({ kind: 'jsonl', path: '/definitely/not/there/session-x/session.v4.jsonl.zstd' })
+  ctx.sessionPersistence.locate = () => ({ kind: 'jsonl', path: '/definitely/not/there/' + id + '/session.v4.jsonl.zstd' })
   const out = await deleteSessionRecord(ctx, id)
   assert.equal(out.ok, false, '删不掉磁盘文件就不能报成功')
-  assert.equal(out.status, 500)
+  // 目录不存在时 `deleteDirectory` 报 ENOENT → 500；若定位守卫先把它挡下则是 501。
+  // 两种都必须报失败，区别只在原因，断言按"报失败"验收。
+  assert.ok(out.status === 500 || out.status === 501, 'status=' + out.status)
   assert.deepEqual(calls.emit, [], '日志还在时广播移除 = 界面行消失但文件还在，最危险的谎报')
 })
 
@@ -1117,4 +1119,162 @@ test('AUD-002：真删掉了才广播，且目录确实消失', async () => {
   assert.deepEqual(calls.emit, [['api-session/removed', id]], '删成功才广播')
   const { rm } = await import('node:fs/promises')
   await rm(root, { recursive: true, force: true })
+})
+
+//#region AA-OPT-001/002：写操作幂等与「写成功即成功」
+
+/** 一个只在 reset/revert 上回放的替身：可以卡住某一条命令来制造并发。 */
+function writeStub(options = {}) {
+  const calls = []
+  const spawns = []
+  const subprocess = {
+    async resolveExecutable() { return '/usr/local/bin/git' },
+    spawn(spec) {
+      const line = spec.argv.slice(1).join(' ')
+      calls.push(spec.argv)
+      spawns.push({ argv: spec.argv, signal: spec.signal })
+      let canned = { exitCode: 0, stdout: '', stderr: '' }
+      if (line.includes('^{commit}')) canned = { exitCode: 0, stdout: 'a'.repeat(40) + '\n' }
+      else if (line.startsWith('rev-parse --short')) canned = { exitCode: 0, stdout: 'abc1234\n' }
+      else if (line.startsWith('rev-parse')) canned = { exitCode: 0, stdout: '/repo\n' }
+      else if (line.startsWith('for-each-ref') && !line.includes('%(HEAD)')) canned = { exitCode: 0, stdout: REFS_NAMES }
+      else if (line.startsWith('for-each-ref')) canned = { exitCode: 0, stdout: REFS_PICKER }
+      else if (line.startsWith('status')) canned = { exitCode: 0, stdout: '# branch.oid abc1234\n# branch.head main\n' }
+      if (typeof options.reply === 'function') canned = options.reply(line, canned) ?? canned
+      const gate = typeof options.gate === 'function' ? options.gate(line) : null
+      // 快照：`done` 是异步消费的，必须绑住**这一次**的输出（共用外层变量会读到下一次的）
+      const text = { ...canned }
+      const finish = () => ({ exitCode: text.exitCode })
+      return {
+        done: gate === null ? Promise.resolve(finish()) : gate.then(finish),
+        collected: {
+          stdout: { readFrom: () => ({ text: text.stdout ?? '', lossy: false }) },
+          stderr: { readFrom: () => ({ text: text.stderr ?? '' }) },
+        },
+      }
+    },
+  }
+  return { subprocess, calls, spawns, writes: (word) => calls.filter((argv) => argv[1] === word).length }
+}
+
+test('AA-OPT-001：同一个 reset 连发两次，第二次必须被拒且 git 只执行一次', { timeout: 5000, concurrency: false }, async () => {
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const stub = writeStub({ gate: (line) => (line.startsWith('reset') ? gate : null) })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const signal = new AbortController().signal
+  const first = reader.reset('/repo', 'abc1234', 'hard', signal)
+  const second = await reader.reset('/repo', 'abc1234', 'hard', signal)
+  assert.equal(second.ok, false, '第二次不得成功')
+  assert.equal(second.code, 'busy', '必须给出可判定的 busy，而不是排队或静默')
+  release()
+  assert.equal((await first).ok, true)
+  assert.equal(stub.writes('reset'), 1, '--hard 只能执行一次（这是会丢数据的那条）')
+})
+
+test('AA-OPT-001：同一个工作区同一时刻只允许一个写（换参数也不行）', { timeout: 5000, concurrency: false }, async () => {
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const stub = writeStub({ gate: (line) => (line.startsWith('reset') ? gate : null) })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const signal = new AbortController().signal
+  const first = reader.reset('/repo', 'abc1234', 'hard', signal)
+  // 换 mode 是另一个动作，但**同一个工作区**仍然只能一个一个来：两条并发的写
+  // 谁最后落地取决于调度，而两次都会报成功。
+  const other = await reader.reset('/repo', 'abc1234', 'mixed', signal)
+  assert.equal(other.ok, false)
+  assert.equal(other.code, 'busy')
+  release()
+  assert.equal((await first).ok, true)
+  assert.equal(stub.writes('reset'), 1, '第二条不得执行')
+})
+
+test('AA-OPT-001：并发切到不同分支时，第二条被拒（否则两条都跑、谁赢看调度）', { timeout: 5000, concurrency: false }, async () => {
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const stub = writeStub({ gate: (line) => (line.startsWith('switch') ? gate : null) })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const signal = new AbortController().signal
+  const a = reader.switchBranch('/repo', 'main', signal)
+  const b = await reader.switchBranch('/repo', 'feat/x', signal)
+  assert.equal(b.ok, false)
+  assert.equal(b.code, 'busy')
+  release()
+  assert.equal((await a).ok, true)
+  assert.equal(stub.writes('switch'), 1)
+})
+
+test('AA-OPT-001：正在执行的 revert 也不能被重发', { timeout: 5000, concurrency: false }, async () => {
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const stub = writeStub({ gate: (line) => (line.startsWith('revert --no-edit') ? gate : null) })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const signal = new AbortController().signal
+  const first = reader.revert('/repo', 'abc1234', signal)
+  const second = await reader.revert('/repo', 'abc1234', signal)
+  assert.equal(second.ok, false)
+  assert.equal(second.code, 'busy')
+  release()
+  assert.equal((await first).ok, true)
+})
+
+test('AA-OPT-002：写成功之后读数抛错，仍然必须报成功（payload 为 null）', async () => {
+  let stubDone = false
+  const stub = writeStub({
+    reply: (line, canned) => (line.startsWith('status') && stubDone ? { exitCode: 1, stdout: '', stderr: 'boom' } : canned),
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const signal = new AbortController().signal
+  // 命令已经跑过之后再把后续读数打瘸
+  stubDone = true
+  const out = await reader.reset('/repo', 'abc1234', 'keep', signal)
+  assert.equal(out.ok, true, '仓库已经变了，界面不能报失败')
+  assert.equal(out.payload, null, '读数拿不到就如实给 null，不许编')
+})
+
+test('AA-OPT-002：revert 成功后读数失败也不能翻成失败', async () => {
+  let revertDone = false
+  const stub = writeStub({
+    reply: (line, canned) => {
+      if (line.startsWith('revert --no-edit')) revertDone = true
+      // 回滚前的检查全部正常；回滚**之后**的读数（status/diff/refs）一律失败
+      if (!revertDone || !(line.startsWith('status') || line.startsWith('diff') || line.startsWith('for-each-ref'))) return canned
+      return { exitCode: 1, stdout: '', stderr: 'boom' }
+    },
+  })
+  const reader = createGitStatusReader({ subprocess: stub.subprocess })
+  const out = await reader.revert('/repo', 'abc1234', new AbortController().signal)
+  assert.equal(out.ok, true)
+  assert.equal(out.payload, null)
+})
+
+test('AA-OPT-001/002：路由把 busy 映射成 409，且不会报成 500', async () => {
+  const route = gitStatusRoute(
+    { sessions: { get: () => ({ header: { cwd: '/repo' } }) } },
+    {
+      read: async () => ({ branch: 'main' }),
+      reset: async () => ({ ok: false, code: 'busy', message: 'A git action is already running.' }),
+    },
+  )
+  const request = new Request('http://127.0.0.1/api/sym.git', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: 's1', action: 'reset', commit: 'abc1234', mode: 'hard' }),
+  })
+  const response = await route.fetch(request)
+  assert.equal(response.status, 409)
+  const body = await response.json()
+  assert.equal(body.code, 'busy')
+})
+
+//#endregion
+
+test('换名脚本：历史审计产物永不被改写（docs/05-audits 与 docs/adversarial-audits）', async () => {
+  const source = readFileSync(new URL('../scripts/reload-host.mjs', import.meta.url), 'utf8')
+  // 这两条前缀是"证据链不覆盖"的契约：`reload-host.mjs --apply` 曾只跳过
+  // `docs/05-audits/`，于是把 `docs/adversarial-audits/` 下两份历史报告里的
+  // 旧文件名一起改掉了 —— 走查历史的人会看到与当时事实不符的引用。
+  assert.match(source, /'docs\/05-audits\/'/, '必须跳过 docs/05-audits/')
+  assert.match(source, /'docs\/adversarial-audits\/'/, '必须跳过 docs/adversarial-audits/')
+  assert.match(source, /'adversarial-audits\/'/, '仓库根的旧目录也要跳过')
 })

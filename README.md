@@ -327,7 +327,7 @@ dsh plugin --profile desktop add /绝对路径/dsh-sym
 ```yaml
 - insert:
     - id: sym-dev
-      name: 'file:///绝对路径/dsh-sym/lib/host-v20.js'
+      name: 'file:///绝对路径/dsh-sym/lib/host-v21.js'
 - id: sym-dev
   disabled: false
 ```
@@ -410,7 +410,7 @@ DSH 内置了一份 **pi-ai 价目目录**（42 家厂商、1046 个模型，美
 
 ```
 ┌─ 宿主（Electron 主进程，Cordis 插件树） ─────────────────────┐
-│  lib/host-v20.js                                              │
+│  lib/host-v21.js                                              │
 │   • sessionProjections 注册三个投影：                          │
 │       sessionCost（token 折叠）· contextLoss（压缩计数）       │
 │       quickActions（按钮清单的只读投影）                       │
@@ -458,7 +458,7 @@ Remote 命名空间，插件无法新增。改文件、切分支、删会话这�
 
 仓库里唯一的配置文件是 `lib/prices.json`（见上）。
 
-宿主半边改动（`lib/host-v20.js`）需要**重启 App**；客户端半边（`lib/client.js`）和
+宿主半边改动（`lib/host-v21.js`）需要**重启 App**；客户端半边（`lib/client.js`）和
 `lib/prices.json` 都是**热生效**的。
 
 ---
@@ -468,7 +468,7 @@ Remote 命名空间，插件无法新增。改文件、切分支、删会话这�
 ### 目录
 
 ```
-lib/host-v20.js     宿主半边：投影折叠 + 价目来源 + 引用展开 + 两条认证路由
+lib/host-v21.js     宿主半边：投影折叠 + 价目来源 + 引用展开 + 两条认证路由
 lib/client.js       客户端半边：各处读数 + 快捷按钮条 + 设置页 + 提交记录 + 会话菜单
 lib/prices.json     价目覆盖 / 汇率 / 节假日
 cordis.patch.yml    组合包补丁（让 profile 一次性装好）
@@ -484,7 +484,7 @@ scripts/            开发脚本（宿主换名 reload-host.mjs、图标校正 f
 |---|---|
 | `lib/client.js` | 有 bundle watcher（`pnpm run dev:web`）时热更新；否则需完全退出 App |
 | `lib/prices.json` | 立即生效（宿主按 mtime 检测） |
-| `lib/host-v20.js` | **需要重启 App**，或用「停用 → 换文件名 → 启用」绕开模块缓存 |
+| `lib/host-v21.js` | **需要重启 App**，或用「停用 → 换文件名 → 启用」绕开模块缓存 |
 
 > ⚠ DSH 桌面版**没有任何刷新快捷键**（`toggleDevTools` 不可见，reload 只在 win32 分支注册）。
 > 客户端改动生效只有两条路：完全退出（Cmd+Q，不是关窗口）再打开，或跑 bundle watcher。

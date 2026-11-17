@@ -57,7 +57,7 @@ evidence: []
 
 ## 影响
 
-- `lib/host-v20.js`：新增 `parseGitLog`、`log`、`reset`、`revert`、`revertState`、
+- `lib/host-v21.js`：新增 `parseGitLog`、`log`、`reset`、`revert`、`revertState`、
   `abortRevert`；路由新增 `kind=log` 与三个 `action`。
 - `lib/client.js`：`SymViewPlaceholder` → `CommitLogView`；新增 `describeCommitLog`、
   `formatCommitTime`、`sessionIdOf`；标签名改为「提交记录」。

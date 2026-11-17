@@ -76,6 +76,22 @@ test('describeScope：峰谷混合的 DeepSeek 会话，拆分与谷时省钱都
   assert.doesNotMatch(text, /未命中价计费/, '连同那条反事实的解释也一并撤掉')
 })
 
+test('AA-MONEY-005：报价簿没读到时，悬停账单里必须有可见提示', () => {
+  const { describeScope } = loadClient()
+  const plain = { requests: 2, peakRequests: 0, models: [], unpriced: [] }
+  // 没有这个字段（老载荷）或显式 false：不出现提示
+  assert.ok(!/价目表/.test(describeScope(plain, undefined, '标题')))
+  assert.ok(!/价目表/.test(describeScope({ ...plain, catalogMissing: false }, undefined, '标题')))
+  // 显式 true：必须出现，且在用户看得到的地方（不是控制台）
+  assert.match(describeScope({ ...plain, catalogMissing: true }, undefined, '标题'), /价目表/)
+})
+
+test('AA-MONEY-005：单轮作用域（turns[]）也带 catalogMissing，不能只有会话级提示', () => {
+  const { describeScope } = loadClient()
+  const turn = { turn: 1, cny: 0, requests: 1, peakRequests: 0, models: [], unpriced: ['x'], catalogMissing: true }
+  assert.match(describeScope(turn, undefined, '标题'), /价目表/)
+})
+
 test('describeScope：非峰谷定价的厂商不产生「挪到谷时」的数字，也不产生谷时折扣', () => {
   const { describeScope } = loadClient()
   const scope = {

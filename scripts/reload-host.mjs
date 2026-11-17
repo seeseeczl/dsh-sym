@@ -13,7 +13,7 @@
  * 用法：
  *   node scripts/reload-host.mjs --dry-run              # 只打印将要改动的文件与行
  *   node scripts/reload-host.mjs --apply                # 真改：v6 → v7，并同步引用
- *   node scripts/reload-host.mjs --to host-v20.js --apply
+ *   node scripts/reload-host.mjs --to host-v21.js --apply
  *   node scripts/reload-host.mjs --profile ~/.dsh/profiles/other
  *
  * 退出码：0 正常（含 dry-run）；1 参数或环境有问题。
@@ -44,7 +44,7 @@ const SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'coverage']
  * 历史审计产物**永不覆盖**（AGENTS.md 的治理约定）：里面提到的旧文件名是当时的
  * 事实，改掉就毁了证据链。活文档（README、AGENTS.md、openspec、任务书）照改。
  */
-const SKIPPED_PATH_PREFIXES = ['docs/05-audits/', 'adversarial-audits/']
+const SKIPPED_PATH_PREFIXES = ['docs/05-audits/', 'docs/adversarial-audits/', 'adversarial-audits/']
 
 /** 递归收集仓库内所有可能提到入口文件名的文本文件。 */
 function collectFiles(directory, found = []) {
